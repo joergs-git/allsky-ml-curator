@@ -2,79 +2,92 @@ import Foundation
 import GRDB
 import SwiftUI
 
-/// Ingest orchestrator for Phase 1.
+/// Folder-based ingest for Phase 1.
 ///
-/// Given a date range, queries the astro-weather Supabase project for
-/// all `cloudwatcher_readings` rows with at least one populated image
-/// URL, remaps NAS paths to the SMB mount, matches each row to a
-/// `CameraProfile`, pre-computes ephemeris + reflection + transitional
-/// risk scores, and inserts corresponding `ImageRecord` rows into the
-/// local SQLite database.
+/// The user chooses any folder via `Cmd+O` (parity with AstroBlink's
+/// "Open folder" flow). The service walks the folder recursively for
+/// supported image extensions, parses a capture timestamp from every
+/// filename, matches each file to a `CameraProfile` picked by the user,
+/// and pre-computes ephemeris + reflection + geometric transitional
+/// risk scores. Supabase is used purely for *enrichment* — if
+/// credentials are configured, the service fetches cloudwatcher
+/// readings covering the folder's time range in a single batch and
+/// attaches the nearest match (within ±5 min) to each image.
 ///
-/// `dryRun = true` performs every step except the database write, so
-/// the UI can show expected counts before committing. The Phase 2
-/// thumbnail + embedding pipeline runs on the populated `images` rows
-/// in a later stage.
+/// `dryRun = true` performs every step except the database write so
+/// the UI can preview counts before committing.
 @MainActor
 final class IngestService: ObservableObject {
 
     // MARK: - Observable state
 
-    /// Total readings returned by the Supabase query (whole batch).
-    @Published private(set) var totalReadings: Int = 0
-    /// Readings examined so far in the current run.
+    @Published private(set) var totalFiles: Int = 0
     @Published private(set) var processed: Int = 0
-    /// `ImageRecord` rows successfully inserted (or counted, for dry-run).
     @Published private(set) var inserted: Int = 0
-    /// Rows skipped because the file is not on the SMB mount.
-    @Published private(set) var skippedMissingFile: Int = 0
-    /// Rows skipped because no camera profile matched.
-    @Published private(set) var skippedNoProfile: Int = 0
-    /// Rows set to `is_excluded = 1` (mono camera during sun_alt > -6°).
+    @Published private(set) var skippedNoTimestamp: Int = 0
+    @Published private(set) var skippedUnknownExtension: Int = 0
     @Published private(set) var excluded: Int = 0
-    /// Rows flagged by the reflection prefilter (score ≥ 0.5).
     @Published private(set) var reflectionFlagged: Int = 0
-    /// Rows flagged as likely transitional / gain-settling (score ≥ 0.7).
     @Published private(set) var transitionalFlagged: Int = 0
-    /// Human-readable status message surfaced in the UI.
+    @Published private(set) var enrichedWithWeather: Int = 0
     @Published private(set) var statusMessage: String = "idle"
-    /// True while a run is in progress.
     @Published private(set) var isRunning: Bool = false
-    /// Last error (if any) from the most recent run.
     @Published private(set) var lastError: String?
 
-    // MARK: - Control
+    // MARK: - Entry point
 
-    private var cancelToken = CancelToken()
-
-    /// Main entry point. `dryRun = true` runs the full query and
-    /// classification but does not write to the local DB.
-    func ingest(
-        from: Date,
-        to: Date,
+    /// Ingest every supported image in `folderURL` as captures from the
+    /// camera described by `profileId`.
+    func ingestFolder(
+        _ folderURL: URL,
+        profileId: String,
         dryRun: Bool
     ) async {
         guard !isRunning else { return }
-        await MainActor.run { self.resetCounters() }
+        resetCounters()
         isRunning = true
         lastError = nil
-        statusMessage = dryRun ? "dry-run: querying Supabase…" : "querying Supabase…"
         cancelToken = CancelToken()
         let token = cancelToken
 
-        do {
-            let readings = try await SupabaseClient.shared
-                .fetchCloudwatcherReadings(from: from, to: to)
-            await MainActor.run { self.totalReadings = readings.count }
-            statusMessage = "processing \(readings.count) readings…"
+        guard let profile = CameraProfileStore.shared.profile(id: profileId) else {
+            statusMessage = "unknown camera profile"
+            lastError = "Camera profile '\(profileId)' not found in the bundle."
+            isRunning = false
+            return
+        }
 
-            try await process(
-                readings: readings, dryRun: dryRun, token: token
-            )
+        // Sandbox: keep the folder accessible for the duration of the run.
+        let didStart = folderURL.startAccessingSecurityScopedResource()
+        defer {
+            if didStart { folderURL.stopAccessingSecurityScopedResource() }
+        }
+
+        statusMessage = "scanning \(folderURL.lastPathComponent)…"
+
+        do {
+            let files = scanFolder(folderURL)
+            totalFiles = files.count
+            statusMessage = "processing \(files.count) files…"
+
+            let readingsIndex = try await buildWeatherIndex(forFiles: files)
+            let dbWriter: DatabaseWriter? =
+                dryRun ? nil : Database.shared.writer
+
+            for file in files {
+                try token.checkCancelled()
+                await processFile(
+                    file,
+                    profile: profile,
+                    readingsIndex: readingsIndex,
+                    dbWriter: dbWriter
+                )
+                processed += 1
+            }
 
             statusMessage = dryRun
-                ? "dry-run done — \(inserted) would be inserted"
-                : "ingest done — \(inserted) inserted"
+                ? "dry-run done — \(inserted) of \(files.count) eligible"
+                : "ingest done — \(inserted) of \(files.count) written"
         } catch is CancellationError {
             statusMessage = "cancelled"
         } catch {
@@ -86,91 +99,184 @@ final class IngestService: ObservableObject {
         isRunning = false
     }
 
-    /// Request cancellation of the current run. Safe to call from any thread.
-    func cancel() {
-        cancelToken.cancel()
+    /// Request cancellation of the current run.
+    func cancel() { cancelToken.cancel() }
+
+    // MARK: - Folder scan
+
+    private static let supportedExtensions: Set<String> = [
+        "jpg", "jpeg", "fit", "fits"
+    ]
+
+    /// Walk `folderURL` recursively and return every supported image file,
+    /// sorted by path so the UI counter advances in a stable order.
+    private func scanFolder(_ folderURL: URL) -> [URL] {
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(
+            at: folderURL,
+            includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        var results: [URL] = []
+        for case let url as URL in enumerator {
+            let ext = url.pathExtension.lowercased()
+            guard Self.supportedExtensions.contains(ext) else { continue }
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
+            else { continue }
+            results.append(url)
+        }
+        return results.sorted { $0.path < $1.path }
     }
 
-    // MARK: - Processing
+    // MARK: - Weather enrichment
 
-    private func process(
-        readings: [SupabaseClient.CloudwatcherReading],
-        dryRun: Bool,
-        token: CancelToken
-    ) async throws {
-        // Resolve dependencies once per run.
-        let settings = AppSettings.shared
-        let profileStore = CameraProfileStore.shared
+    /// Build a timestamp-keyed index of Supabase `cloudwatcher_readings`
+    /// covering the folder's time range, so per-file lookup is O(log n)
+    /// rather than n network round-trips. Returns an empty index when
+    /// Supabase is not configured (enrichment becomes a no-op).
+    private func buildWeatherIndex(
+        forFiles files: [URL]
+    ) async throws -> [Date] {
+        guard SupabaseClient.shared.loadConfig() != nil else { return [] }
+        guard let range = timeRange(of: files) else { return [] }
 
-        // The DB writer is touched only in non-dry-run mode.
-        let dbWriter: DatabaseWriter? = dryRun ? nil : Database.shared.writer
+        statusMessage = "fetching weather for \(range.lowerBound.iso8601Short()) … \(range.upperBound.iso8601Short())"
 
-        for reading in readings {
-            try token.checkCancelled()
+        // Widen ±10 min so edge files still find a neighbor.
+        let lower = range.lowerBound.addingTimeInterval(-600)
+        let upper = range.upperBound.addingTimeInterval(600)
+        let readings = try await SupabaseClient.shared
+            .fetchCloudwatcherReadings(from: lower, to: upper)
+        latestWeatherReadings = readings
+        return readings.map(\.timestamp).sorted()
+    }
 
-            // Each Supabase row can have 1..3 image URLs (color + mono JPG + mono FITS).
-            var candidates: [(ImageRecord.CameraSource, String)] = []
-            if let path = reading.allskyUrl  { candidates.append((.colorAllskyJpg, path)) }
-            if let path = reading.zwoUrl     { candidates.append((.monoZwoJpg, path)) }
-            if let path = reading.zwoFitsUrl { candidates.append((.monoZwoFits, path)) }
+    /// Cache of the most recent fetch so `processFile` can look up the
+    /// full reading row (not just the timestamp) when it finds a match.
+    private var latestWeatherReadings: [SupabaseClient.CloudwatcherReading] = []
 
-            for (cameraSource, nasPath) in candidates {
-                guard let profile = profileStore.profile(for: cameraSource) else {
-                    skippedNoProfile += 1
-                    continue
-                }
-
-                let localPath = remap(
-                    nasPath: nasPath,
-                    fromPrefix: settings.nasPathPrefix,
-                    toMount: settings.allskyMountPath
-                )
-
-                // Skip when the SMB mount doesn't actually hold this file —
-                // dry-run still records the skip so the user sees the count.
-                if !FileManager.default.fileExists(atPath: localPath) {
-                    skippedMissingFile += 1
-                    continue
-                }
-
-                let record = classify(
-                    reading: reading,
-                    cameraSource: cameraSource,
-                    localPath: localPath,
-                    profile: profile,
-                    settings: settings
-                )
-
-                if record.isExcluded { excluded += 1 }
-                if record.reflectionRiskScore >= 0.5 { reflectionFlagged += 1 }
-                if record.transitionalRiskScore >= 0.7 { transitionalFlagged += 1 }
-
-                if let dbWriter {
-                    try await insertIfNew(record, into: dbWriter)
-                }
-                inserted += 1
-            }
-
-            processed += 1
+    /// Timestamp range covered by the given files, based on filename
+    /// parsing + modification-date fallback.
+    private func timeRange(of files: [URL]) -> ClosedRange<Date>? {
+        var earliest: Date?
+        var latest: Date?
+        for url in files {
+            guard let ts = timestamp(for: url) else { continue }
+            earliest = min(earliest ?? ts, ts)
+            latest   = max(latest   ?? ts, ts)
         }
+        guard let e = earliest, let l = latest else { return nil }
+        return e...l
+    }
+
+    // MARK: - Per-file processing
+
+    private func processFile(
+        _ fileURL: URL,
+        profile: CameraProfile,
+        readingsIndex: [Date],
+        dbWriter: DatabaseWriter?
+    ) async {
+        guard let cameraSource = cameraSource(for: fileURL, profile: profile) else {
+            skippedUnknownExtension += 1
+            return
+        }
+
+        guard let captureUtc = timestamp(for: fileURL) else {
+            skippedNoTimestamp += 1
+            return
+        }
+
+        let matchedReading = nearestReading(to: captureUtc)
+        if matchedReading != nil { enrichedWithWeather += 1 }
+
+        let record = classify(
+            filePath: fileURL.path,
+            cameraSource: cameraSource,
+            captureUtc: captureUtc,
+            profile: profile,
+            matchedReading: matchedReading
+        )
+
+        if record.isExcluded { excluded += 1 }
+        if record.reflectionRiskScore >= 0.5 { reflectionFlagged += 1 }
+        if record.transitionalRiskScore >= 0.7 { transitionalFlagged += 1 }
+
+        if let dbWriter {
+            do {
+                try await insertIfNew(record, into: dbWriter)
+            } catch {
+                lastError = "DB insert failed for \(fileURL.lastPathComponent): \(error)"
+                return
+            }
+        }
+        inserted += 1
+    }
+
+    /// Determine the correct `camera_source` for a file given the user's
+    /// chosen profile and the file extension.
+    private func cameraSource(
+        for url: URL, profile: CameraProfile
+    ) -> ImageRecord.CameraSource? {
+        let ext = url.pathExtension.lowercased()
+        switch (profile.sensor.type, ext) {
+        case (.color, "jpg"), (.color, "jpeg"):
+            return .colorAllskyJpg
+        case (.monochrome, "jpg"), (.monochrome, "jpeg"):
+            return .monoZwoJpg
+        case (.monochrome, "fit"), (.monochrome, "fits"):
+            return .monoZwoFits
+        default:
+            return nil
+        }
+    }
+
+    /// Timestamp from filename if parseable, else file modification date.
+    private func timestamp(for url: URL) -> Date? {
+        if let date = FilenameTimestamp.parse(url.lastPathComponent) {
+            return date
+        }
+        let values = try? url.resourceValues(
+            forKeys: [.contentModificationDateKey]
+        )
+        return values?.contentModificationDate
+    }
+
+    /// Find the closest reading in `latestWeatherReadings` whose
+    /// timestamp is within ±5 minutes of `captureUtc`.
+    private func nearestReading(
+        to captureUtc: Date
+    ) -> SupabaseClient.CloudwatcherReading? {
+        guard !latestWeatherReadings.isEmpty else { return nil }
+        var best: SupabaseClient.CloudwatcherReading?
+        var bestDelta = TimeInterval.greatestFiniteMagnitude
+        for reading in latestWeatherReadings {
+            let delta = abs(reading.timestamp.timeIntervalSince(captureUtc))
+            if delta < bestDelta {
+                bestDelta = delta
+                best = reading
+            }
+        }
+        return bestDelta <= 300 ? best : nil
     }
 
     // MARK: - Classification
 
     private func classify(
-        reading: SupabaseClient.CloudwatcherReading,
+        filePath: String,
         cameraSource: ImageRecord.CameraSource,
-        localPath: String,
+        captureUtc: Date,
         profile: CameraProfile,
-        settings: AppSettings
+        matchedReading: SupabaseClient.CloudwatcherReading?
     ) -> ImageRecord {
         let sun = Ephemeris.sun(
-            at: reading.timestamp,
+            at: captureUtc,
             latitudeDeg: profile.site.latitudeDeg,
             longitudeDeg: profile.site.longitudeDeg
         )
         let moon = Ephemeris.moon(
-            at: reading.timestamp,
+            at: captureUtc,
             latitudeDeg: profile.site.latitudeDeg,
             longitudeDeg: profile.site.longitudeDeg
         )
@@ -186,11 +292,8 @@ final class IngestService: ObservableObject {
             )
         )
 
-        // The statistical part of TransitionalDetector needs histogram
-        // stats from the file itself. For Phase 1 ingest we only evaluate
-        // the geometric trigger so the counter is still meaningful — the
-        // statistical refinement happens when the embedding pipeline opens
-        // the image in Phase 2.
+        // Geometric transitional pre-score — histogram refinement runs
+        // later, when the embedding pipeline opens the actual file.
         let transitionalScoreGeometric: Double =
             TransitionalDetector.transitionWindowDeg.contains(sun.horizontal.altitudeDeg)
             && profile.sensor.dayCapable
@@ -199,13 +302,13 @@ final class IngestService: ObservableObject {
 
         return ImageRecord(
             id: nil,
-            filePath: localPath,
+            filePath: filePath,
             fileHashSha256: nil,
             cameraSource: cameraSource,
             cameraProfileId: profile.id,
-            captureUtc: reading.timestamp,
+            captureUtc: captureUtc,
             timeOfDay: sun.timeOfDay,
-            supabaseReadingId: reading.id,
+            supabaseReadingId: matchedReading?.id,
             sunAltDeg: sun.horizontal.altitudeDeg,
             sunAzDeg: sun.horizontal.azimuthDeg,
             moonAltDeg: moon.horizontal.altitudeDeg,
@@ -222,9 +325,10 @@ final class IngestService: ObservableObject {
 
     // MARK: - Database insert
 
-    /// Insert a record if no row with the same `file_path` exists yet.
-    /// Unchanged rows are left alone so repeated ingest runs are idempotent.
-    private func insertIfNew(_ record: ImageRecord, into db: DatabaseWriter) async throws {
+    /// Insert when no row with the same `file_path` already exists.
+    private func insertIfNew(
+        _ record: ImageRecord, into db: DatabaseWriter
+    ) async throws {
         try await db.write { db in
             let existing = try ImageRecord
                 .filter(ImageRecord.Columns.filePath == record.filePath)
@@ -236,37 +340,24 @@ final class IngestService: ObservableObject {
         }
     }
 
-    // MARK: - Path remapping
+    // MARK: - Bookkeeping
 
-    /// Rewrite a Synology NAS path (`/volume1/AllSky-Rheine/...`) to the
-    /// local SMB mount (`/Volumes/AllSky-Rheine/...`). Paths that don't
-    /// match the known prefix are returned unchanged — the existence
-    /// check downstream then skips them.
-    private func remap(nasPath: String, fromPrefix: String, toMount: String) -> String {
-        if nasPath.hasPrefix(fromPrefix) {
-            return toMount + String(nasPath.dropFirst(fromPrefix.count))
-        }
-        return nasPath
-    }
-
-    // MARK: - Counters
+    private var cancelToken = CancelToken()
 
     private func resetCounters() {
-        totalReadings = 0
+        totalFiles = 0
         processed = 0
         inserted = 0
-        skippedMissingFile = 0
-        skippedNoProfile = 0
+        skippedNoTimestamp = 0
+        skippedUnknownExtension = 0
         excluded = 0
         reflectionFlagged = 0
         transitionalFlagged = 0
+        enrichedWithWeather = 0
     }
 
-    // MARK: - Cancellation token
+    // MARK: - Cancellation
 
-    /// Lightweight cancel flag used instead of Swift Task cancellation so
-    /// a cancel request from the UI (button press) can surface without
-    /// passing the enclosing Task around.
     private final class CancelToken: @unchecked Sendable {
         private var cancelled = false
         private let lock = NSLock()
@@ -280,5 +371,15 @@ final class IngestService: ObservableObject {
             lock.lock(); defer { lock.unlock() }
             if cancelled { throw CancellationError() }
         }
+    }
+}
+
+// MARK: - Small formatting helper
+
+private extension Date {
+    func iso8601Short() -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: self)
     }
 }

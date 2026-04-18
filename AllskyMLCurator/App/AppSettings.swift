@@ -26,20 +26,22 @@ final class AppSettings {
         set { defaults.set(newValue, forKey: Key.longitude) }
     }
 
-    // MARK: - Synology mount
+    // MARK: - Last picked folder (for UI recall, no security-scoped bookmark yet)
 
-    /// Absolute path of the SMB mount where the allsky images live.
-    /// The app rewrites `/volume1/…` paths from Supabase to this prefix.
-    var allskyMountPath: String {
-        get { defaults.string(forKey: Key.allskyMount) ?? "/Volumes/AllSky-Rheine" }
-        set { defaults.set(newValue, forKey: Key.allskyMount) }
+    /// Path the user most recently ingested, shown as a breadcrumb in
+    /// the main window. The actual access rights do not persist across
+    /// app launches in v1 — the user picks the folder again each time
+    /// (a security-scoped bookmark can be added in a later revision).
+    var lastIngestedFolderPath: String? {
+        get { defaults.string(forKey: Key.lastFolder) }
+        set { defaults.set(newValue, forKey: Key.lastFolder) }
     }
 
-    /// NAS-side path prefix that Supabase stores. Paths are rewritten by
-    /// replacing this prefix with `allskyMountPath` on ingest.
-    var nasPathPrefix: String {
-        get { defaults.string(forKey: Key.nasPrefix) ?? "/volume1/AllSky-Rheine" }
-        set { defaults.set(newValue, forKey: Key.nasPrefix) }
+    /// Last camera profile the user selected for ingest. Restored in
+    /// the dropdown so repeated ingest sessions don't have to re-pick.
+    var lastCameraProfileId: String? {
+        get { defaults.string(forKey: Key.lastProfileId) }
+        set { defaults.set(newValue, forKey: Key.lastProfileId) }
     }
 
     // MARK: - Autonomous mode
@@ -82,8 +84,8 @@ final class AppSettings {
     private enum Key {
         static let latitude = "observatory.latitudeDeg"
         static let longitude = "observatory.longitudeDeg"
-        static let allskyMount = "mount.allskyPath"
-        static let nasPrefix = "mount.nasPrefix"
+        static let lastFolder = "ingest.lastFolderPath"
+        static let lastProfileId = "ingest.lastProfileId"
         static let autonomousMin = "autonomous.minLabels"
         static let autonomousConfidence = "autonomous.confidenceThreshold"
         static let clearBoost = "ml.clearClassBoost"

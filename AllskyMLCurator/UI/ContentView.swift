@@ -1,28 +1,36 @@
+import AppKit
 import SwiftUI
 
-/// Phase-1 root view: ingest control and live counters.
+/// Phase-1 root view: folder-based ingest control and live counters.
 ///
-/// The matrix view, single-image inspection view and autonomous-mode
-/// overlay are added in subsequent phases — this first screen exists so
-/// the curator can verify the Supabase + SMB + camera-profile plumbing
-/// end-to-end before any UI complexity lands on top of it.
+/// Parity with AstroBlink — the user opens any folder via `Cmd+O` or
+/// the sidebar button, picks a camera profile, and hits Ingest. Earlier
+/// sessions remember the last folder + profile so repeated runs are
+/// quick. The matrix view, single-image inspection view and autonomous
+/// mode land in subsequent phases.
 struct ContentView: View {
 
     @StateObject private var ingest = IngestService()
 
-    @State private var fromDate: Date = Calendar.current.date(
-        byAdding: .day, value: -7, to: Date()
-    ) ?? Date()
-    @State private var toDate: Date = Date()
+    @State private var selectedFolder: URL?
+    @State private var selectedProfileId: String = ""
     @State private var dryRun: Bool = true
 
     var body: some View {
         HSplitView {
             sidebar
-                .frame(minWidth: 260, maxWidth: 320)
+                .frame(minWidth: 280, maxWidth: 360)
             ingestPane
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear {
+            restoreLastSelection()
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: .openAllskyFolderRequested
+        )) { _ in
+            openFolderPicker()
+        }
     }
 
     // MARK: - Sidebar
@@ -33,18 +41,26 @@ struct ContentView: View {
 
             statusRow("Supabase config",
                       ok: SupabaseClient.shared.loadConfig() != nil,
-                      okMsg: "URL + anon key present",
-                      failMsg: "set in Preferences → Supabase")
+                      okMsg: "URL + anon key present (used for weather enrichment)",
+                      failMsg: "optional — set in Preferences → Supabase to enrich")
 
             statusRow("Camera profiles",
                       ok: !CameraProfileStore.shared.profiles.isEmpty,
                       okMsg: "\(CameraProfileStore.shared.profiles.count) loaded",
                       failMsg: "none found — check bundle resources")
 
-            statusRow("Synology mount",
-                      ok: FileManager.default.fileExists(atPath: AppSettings.shared.allskyMountPath),
-                      okMsg: AppSettings.shared.allskyMountPath,
-                      failMsg: "mount the SMB share in Finder")
+            statusRow("Folder",
+                      ok: selectedFolder != nil,
+                      okMsg: selectedFolder?.path ?? "",
+                      failMsg: "pick a folder with Cmd+O or the button below")
+
+            Divider()
+
+            Button { openFolderPicker() } label: {
+                Label("Open Folder…  (⌘O)", systemImage: "folder.badge.plus")
+                    .frame(maxWidth: .infinity)
+            }
+            .controlSize(.large)
 
             Divider()
 
@@ -69,6 +85,8 @@ struct ContentView: View {
                 Text(ok ? okMsg : failMsg)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
             }
         }
     }
@@ -78,7 +96,7 @@ struct ContentView: View {
     private var ingestPane: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Ingest").font(.title2)
-            Text("Pull the Supabase readings for a date range, remap NAS paths to the SMB mount, and build the local image index with pre-computed ephemeris + reflection + transitional risk scores.")
+            Text("Scan a folder of allsky JPG/FITS images, pre-compute ephemeris + reflection + transitional scores, and (if Supabase is configured) enrich every frame with the nearest CloudWatcher reading within ±5 min.")
                 .font(.body)
                 .foregroundStyle(.secondary)
 
@@ -99,21 +117,53 @@ struct ContentView: View {
     }
 
     private var controls: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
-                DatePicker("From", selection: $fromDate, displayedComponents: [.date, .hourAndMinute])
-                    .frame(maxWidth: 300)
-                DatePicker("To",   selection: $toDate,   displayedComponents: [.date, .hourAndMinute])
-                    .frame(maxWidth: 300)
+                Text("Folder:")
+                    .frame(width: 60, alignment: .trailing)
+                if let url = selectedFolder {
+                    Text(url.path)
+                        .font(.callout)
+                        .textSelection(.enabled)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                } else {
+                    Text("none — use ⌘O or the sidebar button")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Change…") { openFolderPicker() }
             }
-            Toggle("Dry-run (query + count only, no local writes)", isOn: $dryRun)
+
+            HStack {
+                Text("Camera:")
+                    .frame(width: 60, alignment: .trailing)
+                Picker("", selection: $selectedProfileId) {
+                    ForEach(CameraProfileStore.shared.allIds, id: \.self) { id in
+                        if let profile = CameraProfileStore.shared.profile(id: id) {
+                            Text(profile.displayName).tag(id)
+                        } else {
+                            Text(id).tag(id)
+                        }
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 380)
+                .onChange(of: selectedProfileId) { _, newId in
+                    AppSettings.shared.lastCameraProfileId = newId
+                }
+                Spacer()
+            }
+
+            Toggle("Dry-run (scan + count only, no DB writes)", isOn: $dryRun)
 
             HStack {
                 Button(ingest.isRunning ? "Working…" : (dryRun ? "Dry-run" : "Ingest")) {
-                    Task { await ingest.ingest(from: fromDate, to: toDate, dryRun: dryRun) }
+                    startIngest()
                 }
                 .keyboardShortcut(.return, modifiers: .command)
-                .disabled(ingest.isRunning)
+                .disabled(ingest.isRunning || selectedFolder == nil || selectedProfileId.isEmpty)
 
                 Button("Cancel") { ingest.cancel() }
                     .disabled(!ingest.isRunning)
@@ -129,20 +179,24 @@ struct ContentView: View {
     private var counters: some View {
         Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
             GridRow {
-                counterCell("Total readings", value: ingest.totalReadings)
-                counterCell("Processed",      value: ingest.processed)
+                counterCell("Total files",   value: ingest.totalFiles)
+                counterCell("Processed",     value: ingest.processed)
             }
             GridRow {
-                counterCell("Inserted",       value: ingest.inserted)
-                counterCell("Excluded (mono / day)", value: ingest.excluded)
+                counterCell("Inserted",      value: ingest.inserted)
+                counterCell("Excluded (mono/day)", value: ingest.excluded)
             }
             GridRow {
-                counterCell("Missing file",   value: ingest.skippedMissingFile)
-                counterCell("No profile",     value: ingest.skippedNoProfile)
+                counterCell("No timestamp",  value: ingest.skippedNoTimestamp)
+                counterCell("Unsupported extension", value: ingest.skippedUnknownExtension)
             }
             GridRow {
-                counterCell("Reflection risk ≥ 0.5",   value: ingest.reflectionFlagged)
+                counterCell("Reflection risk ≥ 0.5",  value: ingest.reflectionFlagged)
                 counterCell("Transitional risk ≥ 0.7", value: ingest.transitionalFlagged)
+            }
+            GridRow {
+                counterCell("Weather-enriched", value: ingest.enrichedWithWeather)
+                Color.clear
             }
         }
     }
@@ -151,10 +205,56 @@ struct ContentView: View {
         HStack(spacing: 8) {
             Text("\(value)")
                 .font(.system(.title3, design: .monospaced))
-                .frame(minWidth: 64, alignment: .trailing)
+                .frame(minWidth: 72, alignment: .trailing)
             Text(label)
                 .font(.callout)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - Actions
+
+    private func openFolderPicker() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose an allsky image folder"
+        panel.message = "Pick the root folder — the app scans it recursively for JPG and FITS files."
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        if let current = selectedFolder {
+            panel.directoryURL = current.deletingLastPathComponent()
+        } else if let last = AppSettings.shared.lastIngestedFolderPath {
+            panel.directoryURL = URL(fileURLWithPath: last)
+        }
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        selectedFolder = url
+        AppSettings.shared.lastIngestedFolderPath = url.path
+    }
+
+    private func restoreLastSelection() {
+        if selectedProfileId.isEmpty {
+            selectedProfileId = AppSettings.shared.lastCameraProfileId
+                ?? CameraProfileStore.shared.allIds.first
+                ?? ""
+        }
+        // Folder access from the last session is not persisted in v1 —
+        // but the path is shown as a breadcrumb so the user can
+        // re-pick it with one click.
+        if selectedFolder == nil, let path = AppSettings.shared.lastIngestedFolderPath {
+            selectedFolder = URL(fileURLWithPath: path)
+        }
+    }
+
+    private func startIngest() {
+        guard let folder = selectedFolder, !selectedProfileId.isEmpty else { return }
+        Task {
+            await ingest.ingestFolder(
+                folder,
+                profileId: selectedProfileId,
+                dryRun: dryRun
+            )
         }
     }
 }
