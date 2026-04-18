@@ -22,6 +22,25 @@ struct ContentView: View {
     }()
     @State private var ratingFilter: RatingFilter = .any
     @State private var columns: Int = 6
+    @State private var viewMode: ViewMode = .matrix
+
+    enum ViewMode: String, CaseIterable, Identifiable {
+        case matrix
+        case list
+        var id: String { rawValue }
+        var displayName: String {
+            switch self {
+            case .matrix: return "Matrix"
+            case .list:   return "List"
+            }
+        }
+        var iconName: String {
+            switch self {
+            case .matrix: return "square.grid.3x3"
+            case .list:   return "list.bullet"
+            }
+        }
+    }
     @State private var showIngestSheet: Bool = false
     @State private var showInfoPanel: Bool = true
     @State private var isLoading: Bool = false
@@ -202,15 +221,27 @@ struct ContentView: View {
                 Task { await reload() }
             }
 
-            Picker("", selection: $columns) {
-                Text("4").tag(4)
-                Text("6").tag(6)
-                Text("8").tag(8)
+            Picker("", selection: $viewMode) {
+                ForEach(ViewMode.allCases) { mode in
+                    Image(systemName: mode.iconName).tag(mode)
+                }
             }
             .pickerStyle(.segmented)
-            .frame(width: 120)
+            .frame(width: 92)
             .labelsHidden()
-            .help("Matrix grid columns")
+            .help("Matrix thumbnails / list view")
+
+            if viewMode == .matrix {
+                Picker("", selection: $columns) {
+                    Text("4").tag(4)
+                    Text("6").tag(6)
+                    Text("8").tag(8)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 120)
+                .labelsHidden()
+                .help("Matrix grid columns")
+            }
 
             Toggle("Night", isOn: $nightMode)
                 .toggleStyle(.switch)
@@ -507,16 +538,29 @@ struct ContentView: View {
         .help(showInfoPanel ? "Hide status panel" : "Show status panel")
     }
 
+    @ViewBuilder
     private var matrix: some View {
-        MatrixView(
-            items: items,
-            columns: columns,
-            nightMode: nightMode,
-            predictions: classifier.predictions,
-            onSelectionChange: { selectedIds = $0 },
-            onMutation: { await reload() },
-            onInspect: { idx in inspectedIndex = idx }
-        )
+        switch viewMode {
+        case .matrix:
+            MatrixView(
+                items: items,
+                columns: columns,
+                nightMode: nightMode,
+                predictions: classifier.predictions,
+                onSelectionChange: { selectedIds = $0 },
+                onMutation: { await reload() },
+                onInspect: { idx in inspectedIndex = idx }
+            )
+        case .list:
+            ListView(
+                items: items,
+                nightMode: nightMode,
+                predictions: classifier.predictions,
+                onSelectionChange: { selectedIds = $0 },
+                onMutation: { await reload() },
+                onInspect: { idx in inspectedIndex = idx }
+            )
+        }
     }
 
     private var keybindLegend: some View {
