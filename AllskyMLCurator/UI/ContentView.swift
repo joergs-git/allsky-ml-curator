@@ -29,6 +29,17 @@ struct ContentView: View {
 
     @ObservedObject private var sync = SyncEngine.shared
     @ObservedObject private var classifier = ClassifierEngine.shared
+    @ObservedObject private var autoRater = AutonomousRater.shared
+
+    /// Alert payload shown after a one-shot auto-rate pass completes
+    /// (either with a summary or with a gate error).
+    @State private var autoRateAlert: AutoRateAlertContent?
+
+    struct AutoRateAlertContent: Identifiable {
+        var id = UUID()
+        var title: String
+        var message: String
+    }
 
     /// Coverage of the Vision feature-print sidecar cache — refreshed
     /// periodically so the toolbar chip shows "embed X / Y" progress
@@ -107,6 +118,13 @@ struct ContentView: View {
         )) { _ in
             showIngestSheet = true
         }
+        .alert(item: $autoRateAlert) { content in
+            Alert(
+                title: Text(content.title),
+                message: Text(content.message),
+                dismissButton: .default(Text("OK"))
+            )
+        }
     }
 
     // MARK: - Toolbar
@@ -174,6 +192,8 @@ struct ContentView: View {
                     AppSettings.shared.nightMode = new
                 }
 
+            autoRateButton
+
             Spacer()
 
             classifierGauge
@@ -186,6 +206,51 @@ struct ContentView: View {
         .padding(.vertical, 10)
         .frame(height: 74)
         .background(AppColors.bgToolbar(nightMode))
+    }
+
+    // MARK: - Auto-rate
+
+    /// One-shot autonomous rating button. Applies the current
+    /// classifier's top prediction to every unrated tile in the
+    /// visible filter whose top probability clears the Preferences
+    /// threshold. Gated by a minimum human-label count (200 by
+    /// default) to keep a freshly-seeded model from runaway
+    /// confirmation bias. Result is reported via `autoRateAlert`.
+    private var autoRateButton: some View {
+        Button {
+            runAutoRate()
+        } label: {
+            Label(
+                autoRater.isRunning ? "Auto-rating…" : "Auto-rate",
+                systemImage: "wand.and.stars"
+            )
+            .font(.body.weight(.medium))
+        }
+        .controlSize(.large)
+        .keyboardShortcut("a", modifiers: [.command, .shift])
+        .disabled(autoRater.isRunning || items.isEmpty)
+        .help("Apply high-confidence classifier predictions to every unrated tile in the current filter (⌘⇧A)")
+    }
+
+    private func runAutoRate() {
+        Task {
+            let result = await autoRater.run(on: items)
+            switch result {
+            case .success(let summary):
+                autoRateAlert = AutoRateAlertContent(
+                    title: "Auto-rate complete",
+                    message: summary.userMessage
+                )
+                // Refresh the list so the newly auto-rated tiles pick
+                // up their prediction-driven tier colors.
+                await reload()
+            case .failure(let err):
+                autoRateAlert = AutoRateAlertContent(
+                    title: "Auto-rate blocked",
+                    message: err.errorDescription ?? "Unknown error"
+                )
+            }
+        }
     }
 
     // MARK: - Brand
