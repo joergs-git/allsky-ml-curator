@@ -310,12 +310,14 @@ struct MatrixView: View {
                 fromAnchor: selectionAnchor, toCursor: newIndex
             )
         } else {
-            // Plain navigation — collapse to a single tile AND move
-            // the anchor with the cursor (classical Finder / Excel
-            // behaviour). Without this the anchor goes stale and the
-            // next Shift+arrow extends from the wrong origin.
+            // Plain navigation — collapse to a single tile but keep
+            // the anchor pinned at the original pick. Paging through
+            // the library and then Shift+arrow back should still
+            // extend from the tile the user first highlighted, not
+            // from wherever the cursor happened to land. Anchor only
+            // moves on click / Cmd+click / Cmd+A — keyboard nav
+            // alone never disturbs it.
             selectedIds = [targetId]
-            selectionAnchor = newIndex
         }
         onSelectionChange(selectedIds)
         withAnimation(.easeOut(duration: 0.15)) {
