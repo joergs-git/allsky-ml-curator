@@ -33,6 +33,15 @@ struct ImageRecord: Codable, Identifiable, Equatable, Sendable {
     /// Drives the forecast-aux features in `FeatureVectorBuilder`.
     var meteoblueHourId: Int64?
 
+    /// Total cloud cover for the matched meteoblue hour, percent (0…100).
+    /// Denormalized on ingest so the classifier never needs a DB join
+    /// at train or predict time. Nil when no forecast hour matched.
+    var meteoblueTotalCloud: Double?
+
+    /// Seeing forecast for the matched meteoblue hour, in arcseconds.
+    /// Rarely drops below 1″ or exceeds 6″ for northern-European sites.
+    var meteoblueSeeingArcsec: Double?
+
     // MARK: - Ephemeris (sun / moon, body-agnostic)
 
     var sunAltDeg: Double
@@ -109,6 +118,8 @@ extension ImageRecord: FetchableRecord, MutablePersistableRecord {
         static let timeOfDay             = Column(CodingKeys.timeOfDay)
         static let supabaseReadingId     = Column(CodingKeys.supabaseReadingId)
         static let meteoblueHourId       = Column(CodingKeys.meteoblueHourId)
+        static let meteoblueTotalCloud   = Column(CodingKeys.meteoblueTotalCloud)
+        static let meteoblueSeeingArcsec = Column(CodingKeys.meteoblueSeeingArcsec)
         static let sunAltDeg             = Column(CodingKeys.sunAltDeg)
         static let sunAzDeg              = Column(CodingKeys.sunAzDeg)
         static let moonAltDeg            = Column(CodingKeys.moonAltDeg)
