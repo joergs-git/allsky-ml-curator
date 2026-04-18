@@ -3,12 +3,46 @@ import SwiftUI
 
 /// The keyboard-first allsky rating matrix. Shows a large grid of
 /// thumbnails, applies ratings via number keys, and navigates with
-/// arrow keys. The single-image inspection view is a later phase;
-/// this phase gets the curator from ingest to a usable rating flow.
+/// arrow keys.
 ///
-/// Designed for Mac Studio throughput — a day of frames is ~1400
-/// tiles; `LazyVGrid` keeps memory stable by rendering only the
-/// visible rows.
+/// # Selection model — what each action does, and what it doesn't
+///
+/// The model is "stable anchor, moving cursor":
+///
+///   - A **plain click** on a tile sets cursor = anchor = clicked;
+///     the selection collapses to `{clicked}`.
+///   - A **Cmd+click** toggles the clicked tile in the selection;
+///     cursor = anchor = clicked (so a later Shift+arrow extends
+///     from this fresh pick).
+///   - A **Shift+click** keeps the anchor pinned and selects the
+///     row-aligned range from anchor to clicked.
+///   - A **plain arrow / page / home / end** moves the cursor and
+///     collapses selection to `{cursor}`, but the anchor does
+///     *not* move. That's the important part: the anchor is the
+///     tile the user last deliberately picked, and keyboard nav
+///     alone never reassigns it. You can page through the library
+///     and Shift+arrow or Shift+click back to extend a range from
+///     your original pick.
+///   - **Shift+arrow / PageUp / PageDown / Home / End** extends
+///     from the stable anchor to the new cursor using the
+///     row-aligned rectangle (so Shift+Down fills whole rows).
+///   - **Shift+Left / Shift+Right** is the exception: it mutates
+///     the selection by exactly one tile (insert on move-away,
+///     remove on move-back), so a multi-row block built with
+///     Shift+Down survives horizontal trimming.
+///   - **Cmd+A** selects everything, anchor ← first, cursor ← last.
+///
+/// # Cursor persistence across list changes
+///
+/// Cursor and anchor are kept as **item IDs**, not list indices.
+/// When the underlying list changes — filter flip, a rated block
+/// disappearing from "only unrated", a re-ingest — the cursor ID
+/// survives; its new index is recomputed on the fly. If the cursor
+/// tile was among the removed items, `reconcileSelectionState`
+/// walks the OLD list for the nearest surviving neighbour (next
+/// successor first, then predecessor), so the cursor lands on the
+/// *next tile you were about to rate*, not "back at the top" or
+/// "a kilometre up" as the index-based model used to do.
 struct MatrixView: View {
 
     // MARK: - Inputs
@@ -16,50 +50,53 @@ struct MatrixView: View {
     let items: [ImageLibrary.ImageListItem]
     let columns: Int
     let nightMode: Bool
-    /// Classifier predictions keyed by imageId — forwarded per tile
-    /// so a sweep over this dictionary is O(1) per row.
     let predictions: [Int64: ClassifierEngine.Prediction]
-
-    /// Called when the selection changes. Exposed so the outer
-    /// ContentView can render a status bar showing "X of Y selected".
     let onSelectionChange: (Set<Int64>) -> Void
-
-    /// Called after a rating or flag write completes so the caller
-    /// can refresh the image list.
     let onMutation: () async -> Void
-
-    /// Called when the user presses Enter on the cursor tile. The
-    /// passed index addresses `items`; the caller opens the
-    /// inspection sheet.
     let onInspect: (Int) -> Void
 
     // MARK: - State
 
     @State private var selectedIds: Set<Int64> = []
-    @State private var cursorIndex: Int = 0
-    /// Stable anchor for Shift-based range selection. Only touched by
-    /// plain (no-modifier) clicks, so the user can keyboard-navigate
-    /// freely and still shift-click back to the anchor's position
-    /// later. Standard macOS text/table selection model.
-    @State private var selectionAnchor: Int = 0
+
+    /// The tile the cursor is currently on. Tracked by ID so a list
+    /// refresh doesn't leave the cursor pointing at the wrong tile.
+    @State private var cursorId: Int64?
+
+    /// The tile Shift+anything extends from. Stable: plain arrow /
+    /// page / home / end leave this alone — only click / Cmd+click /
+    /// Cmd+A / rating-landing-on-empty-list touch it.
+    @State private var anchorId: Int64?
+
     @FocusState private var isFocused: Bool
 
-    /// Confidence set by the prefix keys `q` (quick, 1) and `c`
-    /// (certain, 3) — the very next digit press commits with this
-    /// confidence attached to the label, then the mode resets. `nil`
-    /// means the next rating lands with confidence=null (the
-    /// backward-compatible default). Layout-agnostic: only plain `q`
-    /// and `c` characters are inspected, no Shift / Option modifier
-    /// contortions that break on non-US keyboards.
+    /// Confidence prefix (Q = quick / 1, C = certain / 3). Consumed
+    /// exactly once by the next digit press; toggles off if the same
+    /// prefix key is pressed twice.
     @State private var pendingConfidence: Int?
 
+    // MARK: - Derived indices
+
+    private var cursorIndex: Int {
+        guard let cursorId,
+              let idx = items.firstIndex(where: { $0.id == cursorId })
+        else { return 0 }
+        return idx
+    }
+
+    /// Anchor index, falling back to cursor when the anchor item is
+    /// missing (so a freshly reconciled view never has a dangling
+    /// anchor pointing off into space).
+    private var anchorIndex: Int {
+        guard let anchorId,
+              let idx = items.firstIndex(where: { $0.id == anchorId })
+        else { return cursorIndex }
+        return idx
+    }
+
     private var gridColumns: [GridItem] {
-        // Tight spacing so adjacent same-rating tiles visually merge
-        // their colored bands into a continuous bar.
-        Array(
-            repeating: GridItem(.flexible(minimum: 80), spacing: 2),
-            count: columns
-        )
+        Array(repeating: GridItem(.flexible(minimum: 80), spacing: 2),
+              count: columns)
     }
 
     // MARK: - Body
@@ -73,7 +110,7 @@ struct MatrixView: View {
                             MatrixTileCell(
                                 item: item,
                                 isSelected: selectedIds.contains(item.id),
-                                isCursor: index == cursorIndex,
+                                isCursor: item.id == cursorId,
                                 prediction: predictions[item.id],
                                 nightMode: nightMode
                             )
@@ -97,63 +134,136 @@ struct MatrixView: View {
             .focusEffectDisabled()
             .onAppear {
                 isFocused = true
-                if selectedIds.isEmpty, let first = items.first {
+                if cursorId == nil, let first = items.first {
+                    cursorId = first.id
+                    anchorId = first.id
                     selectedIds = [first.id]
-                    cursorIndex = 0
-                    selectionAnchor = 0
                     onSelectionChange(selectedIds)
                 }
             }
-            .onChange(of: items.map(\.id)) { _, _ in
-                pruneStaleSelection()
+            .onChange(of: items.map(\.id)) { oldIds, newIds in
+                reconcileSelectionState(
+                    oldIds: oldIds, newIds: newIds, proxy: proxy
+                )
             }
             .onKeyPress(phases: [.down, .repeat]) { press in
-                // Including .repeat makes arrow keys + page keys
-                // auto-advance while held down, matching the usual
-                // macOS scrolling behaviour.
                 handleKey(press, proxy: proxy)
             }
         }
     }
 
-    // MARK: - Selection handling
+    // MARK: - Reconciliation on list change
+
+    /// Called whenever `items` changes: filter flip, rated block
+    /// disappearing from the "only unrated" view, a fresh ingest.
+    ///
+    ///   1. Prune selection of any IDs the new list doesn't carry.
+    ///   2. If the cursor item is still present, nothing to do — its
+    ///      derived index resolves on the fly.
+    ///   3. If the cursor item was removed, pick the nearest surviving
+    ///      neighbour in the **old** list: first the next successor
+    ///      (so rating a block of unrated frames lands the cursor on
+    ///      the next unrated frame in capture order), then the
+    ///      predecessor as a fallback.
+    ///   4. Anchor: if its item was removed, collapse to cursor so
+    ///      the next Shift+arrow extends from a live tile.
+    ///   5. Scroll the cursor back into view — without this, SwiftUI
+    ///      can leave the viewport wherever it was, which after a
+    ///      big filter change looks like the whole list jumped.
+    private func reconcileSelectionState(
+        oldIds: [Int64], newIds: [Int64], proxy: ScrollViewProxy
+    ) {
+        guard !newIds.isEmpty else {
+            selectedIds.removeAll()
+            cursorId = nil
+            anchorId = nil
+            onSelectionChange(selectedIds)
+            return
+        }
+        let liveIds = Set(newIds)
+        selectedIds.formIntersection(liveIds)
+
+        // Cursor: preserve by ID, else nearest survivor, else first.
+        if let cid = cursorId, liveIds.contains(cid) {
+            // still live
+        } else if let cid = cursorId,
+                  let replacement = Self.nearestSurvivor(
+                    of: cid, in: oldIds, live: liveIds) {
+            cursorId = replacement
+        } else {
+            cursorId = newIds.first
+        }
+
+        // Anchor: keep if live, else collapse to cursor.
+        if let aid = anchorId, liveIds.contains(aid) {
+            // still live
+        } else {
+            anchorId = cursorId
+        }
+
+        onSelectionChange(selectedIds)
+
+        // Snap the scroll view onto the cursor so the user doesn't
+        // have to hunt for it after a filter change or a rating that
+        // removed visible tiles.
+        if let cid = cursorId {
+            withAnimation(.easeOut(duration: 0.15)) {
+                proxy.scrollTo(cid, anchor: .center)
+            }
+        }
+    }
+
+    /// Walk the OLD list from the stale ID outward — forward first
+    /// (natural successor in capture order), then backward — looking
+    /// for the nearest item that survived into the new list.
+    private static func nearestSurvivor(
+        of stale: Int64, in oldIds: [Int64], live: Set<Int64>
+    ) -> Int64? {
+        guard let idx = oldIds.firstIndex(of: stale) else { return nil }
+        if idx + 1 < oldIds.count {
+            for i in (idx + 1)..<oldIds.count where live.contains(oldIds[i]) {
+                return oldIds[i]
+            }
+        }
+        if idx > 0 {
+            for i in stride(from: idx - 1, through: 0, by: -1)
+            where live.contains(oldIds[i]) {
+                return oldIds[i]
+            }
+        }
+        return nil
+    }
+
+    // MARK: - Click handling
 
     private func handleClick(item: ImageLibrary.ImageListItem, index: Int) {
         isFocused = true
-        cursorIndex = index
         let modifiers = NSEvent.modifierFlags
         if modifiers.contains(.command) {
-            // Toggle individual tile; anchor moves to the clicked
-            // tile so the next shift-click/arrow extends from here.
+            // Individual toggle. Anchor + cursor land on clicked so
+            // the next Shift+arrow extends from here.
             if selectedIds.contains(item.id) { selectedIds.remove(item.id) }
             else                             { selectedIds.insert(item.id) }
-            selectionAnchor = index
+            cursorId = item.id
+            anchorId = item.id
         } else if modifiers.contains(.shift) {
-            // Extend from the stable anchor to the clicked tile,
-            // using the row-aligned rectangle so multi-row ranges
-            // come out as horizontal strips instead of a diagonal.
+            // Extend from the anchor to the clicked tile. Anchor stays
+            // put; cursor lands on the clicked tile.
+            cursorId = item.id
             selectedIds = rowAlignedSelection(
-                fromAnchor: selectionAnchor, toCursor: index
+                fromAnchor: anchorIndex, toCursor: index
             )
         } else {
-            // Plain click — move both anchor and cursor here, single
-            // tile in the selection.
+            // Plain click — single-tile selection, anchor = cursor.
             selectedIds = [item.id]
-            selectionAnchor = index
+            cursorId = item.id
+            anchorId = item.id
         }
         onSelectionChange(selectedIds)
     }
 
-    private func pruneStaleSelection() {
-        let liveIds = Set(items.map(\.id))
-        selectedIds.formIntersection(liveIds)
-        if cursorIndex >= items.count { cursorIndex = max(0, items.count - 1) }
-        if selectionAnchor >= items.count { selectionAnchor = max(0, items.count - 1) }
-        onSelectionChange(selectedIds)
-    }
-
     /// Row-aligned rectangle between two indices. Single-row ranges
-    /// are contiguous (just tiles between lo and hi). Multi-row
+    /// are contiguous (just the tiles between lo and hi). Multi-row
     /// ranges fill every intermediate row from column 0 to the last
     /// column, so Shift+Down selects a full horizontal strip rather
     /// than a diagonal sliver the column-major arithmetic would
@@ -161,6 +271,7 @@ struct MatrixView: View {
     private func rowAlignedSelection(
         fromAnchor anchor: Int, toCursor cursor: Int
     ) -> Set<Int64> {
+        guard !items.isEmpty else { return [] }
         let clampedAnchor = max(0, min(items.count - 1, anchor))
         let clampedCursor = max(0, min(items.count - 1, cursor))
         let lo = min(clampedAnchor, clampedCursor)
@@ -186,9 +297,6 @@ struct MatrixView: View {
         // measuring the scroll view.
         let pageStep = max(columns, columns * 5)
 
-        // Esc is the escape hatch for an armed confidence prefix —
-        // without this, the user would have to press the same prefix
-        // key again (or commit a rating they don't want) to clear it.
         if press.key == .escape, pendingConfidence != nil {
             withAnimation(.easeInOut(duration: 0.12)) {
                 pendingConfidence = nil
@@ -198,13 +306,6 @@ struct MatrixView: View {
 
         switch press.key {
         case .leftArrow:
-            // Shift+Left/Right mutate the selection by exactly one tile
-            // (add or remove depending on whether we're moving away from
-            // or back toward the anchor). The row-aligned rectangle
-            // model is intentionally *not* used here — otherwise
-            // pressing Shift+Left after Shift+Down would snap the
-            // whole multi-row block back to a single row, surprising
-            // the user who only wanted to trim one cell.
             if shift { shiftHorizontalStep(-1, proxy: proxy) }
             else     { moveCursor(by: -1, extend: false, proxy: proxy) }
             return .handled
@@ -212,33 +313,46 @@ struct MatrixView: View {
             if shift { shiftHorizontalStep(+1, proxy: proxy) }
             else     { moveCursor(by: +1, extend: false, proxy: proxy) }
             return .handled
-        case .upArrow:     moveCursor(by: -columns,   extend: shift, proxy: proxy); return .handled
-        case .downArrow:   moveCursor(by: +columns,   extend: shift, proxy: proxy); return .handled
-        case .pageUp:      moveCursor(by: -pageStep,  extend: shift, proxy: proxy); return .handled
-        case .pageDown:    moveCursor(by: +pageStep,  extend: shift, proxy: proxy); return .handled
-        case .home:        moveCursor(to: 0,                extend: shift, proxy: proxy); return .handled
-        case .end:         moveCursor(to: items.count - 1,  extend: shift, proxy: proxy); return .handled
+        case .upArrow:
+            moveCursor(by: -columns,   extend: shift, proxy: proxy)
+            return .handled
+        case .downArrow:
+            moveCursor(by: +columns,   extend: shift, proxy: proxy)
+            return .handled
+        case .pageUp:
+            moveCursor(by: -pageStep,  extend: shift, proxy: proxy)
+            return .handled
+        case .pageDown:
+            moveCursor(by: +pageStep,  extend: shift, proxy: proxy)
+            return .handled
+        case .home:
+            moveCursor(to: 0,                extend: shift, proxy: proxy)
+            return .handled
+        case .end:
+            moveCursor(to: items.count - 1,  extend: shift, proxy: proxy)
+            return .handled
         default: break
         }
 
         if press.modifiers.contains(.command) {
             switch press.characters {
             case "a":
+                guard let first = items.first, let last = items.last else {
+                    return .handled
+                }
                 selectedIds = Set(items.map(\.id))
-                // Anchor the "select all" to position 0 so the next
-                // shift-action collapses predictably.
-                selectionAnchor = 0
-                cursorIndex = items.isEmpty ? 0 : items.count - 1
+                anchorId = first.id
+                cursorId = last.id
                 onSelectionChange(selectedIds)
+                withAnimation(.easeOut(duration: 0.15)) {
+                    proxy.scrollTo(last.id, anchor: .center)
+                }
                 return .handled
             default: return .ignored
             }
         }
 
         if press.key == .return {
-            // Enter on the cursor tile opens the single-image
-            // inspection view. No modifier combinations so it works
-            // regardless of what else is pressed.
             if items.indices.contains(cursorIndex) {
                 onInspect(cursorIndex)
             }
@@ -254,11 +368,6 @@ struct MatrixView: View {
         case "5": applyRatingConsumingPending(.clear);     return .handled
         case "r", "R": toggleFlag(.reflection);   return .handled
         case "t", "T": toggleFlag(.transitional); return .handled
-
-        // Confidence prefix keys. Pressing `q` / `c` arms the next
-        // digit press to carry confidence=1 (quick) or 3 (certain).
-        // Pressing the same key again clears the arm, so toggling
-        // stays discoverable.
         case "q", "Q":
             withAnimation(.easeInOut(duration: 0.12)) {
                 pendingConfidence = (pendingConfidence == 1) ? nil : 1
@@ -269,15 +378,10 @@ struct MatrixView: View {
                 pendingConfidence = (pendingConfidence == 3) ? nil : 3
             }
             return .handled
-
         default: return .ignored
         }
     }
 
-    /// Wraps `applyRating` so the pending confidence flag is consumed
-    /// exactly once and the HUD resets. Keeping the rating-write
-    /// method pure lets the autonomous rater and other callers stay
-    /// confidence-agnostic.
     private func applyRatingConsumingPending(_ cls: RatingClass) {
         let confidence = pendingConfidence
         if pendingConfidence != nil {
@@ -287,6 +391,8 @@ struct MatrixView: View {
         }
         applyRating(cls, confidence: confidence)
     }
+
+    // MARK: - Cursor movement
 
     private func moveCursor(
         by delta: Int, extend: Bool, proxy: ScrollViewProxy
@@ -300,23 +406,19 @@ struct MatrixView: View {
     ) {
         guard !items.isEmpty else { return }
         let newIndex = max(0, min(items.count - 1, targetIndex))
-        cursorIndex = newIndex
         let targetId = items[newIndex].id
+        cursorId = targetId
         if extend {
-            // Shift+navigation — extend from the anchor to the new
-            // cursor. Anchor stays where it is so repeated Shift+arrow
-            // presses grow/shrink the same block.
+            // Shift+nav: extend selection from the stable anchor
+            // through the new cursor.
             selectedIds = rowAlignedSelection(
-                fromAnchor: selectionAnchor, toCursor: newIndex
+                fromAnchor: anchorIndex, toCursor: newIndex
             )
         } else {
-            // Plain navigation — collapse to a single tile but keep
-            // the anchor pinned at the original pick. Paging through
-            // the library and then Shift+arrow back should still
-            // extend from the tile the user first highlighted, not
-            // from wherever the cursor happened to land. Anchor only
-            // moves on click / Cmd+click / Cmd+A — keyboard nav
-            // alone never disturbs it.
+            // Plain nav: cursor moves, selection collapses to the
+            // cursor tile. Anchor does NOT move — that's what lets
+            // the user page through the library and Shift+click or
+            // Shift+arrow back to the original pick.
             selectedIds = [targetId]
         }
         onSelectionChange(selectedIds)
@@ -325,13 +427,9 @@ struct MatrixView: View {
         }
     }
 
-    /// Surgical ±1 cell modification for Shift+Left/Right. Independent
-    /// of any row-aligned rectangle: when the cursor moves away from
-    /// the anchor we insert the new cell; when it moves back toward
-    /// the anchor we remove the cell we just left. This lets the user
-    /// build a multi-row block with Shift+Down and then trim/extend a
-    /// single tile at a time horizontally without collapsing the rest
-    /// of the selection.
+    /// Surgical ±1 cell modification for Shift+Left / Shift+Right.
+    /// Does **not** use the row-aligned rectangle — a multi-row
+    /// block built with Shift+Down should survive horizontal trims.
     private func shiftHorizontalStep(
         _ delta: Int, proxy: ScrollViewProxy
     ) {
@@ -340,69 +438,35 @@ struct MatrixView: View {
         let newIndex = max(0, min(items.count - 1, oldIndex + delta))
         guard newIndex != oldIndex else { return }
 
-        let clampedAnchor = max(0, min(items.count - 1, selectionAnchor))
-        let oldDistance = abs(oldIndex - clampedAnchor)
-        let newDistance = abs(newIndex - clampedAnchor)
+        let anchorIdx = anchorIndex
+        let oldDistance = abs(oldIndex - anchorIdx)
+        let newDistance = abs(newIndex - anchorIdx)
 
         if newDistance > oldDistance {
-            // Moving farther from the anchor — extend the selection
-            // onto the new cell.
+            // Moving farther from the anchor — extend onto the new cell.
             selectedIds.insert(items[newIndex].id)
         } else if newDistance < oldDistance {
-            // Moving back toward the anchor — release the cell we're
-            // leaving. The new cursor cell stays selected because it
-            // was already covered by the prior row-aligned block.
+            // Moving back toward the anchor — release the cell we're leaving.
             selectedIds.remove(items[oldIndex].id)
         } else {
-            // Crossed the anchor with a single step (only possible at
-            // |oldIndex - anchor| == 0 boundary). Swap the two.
+            // Crossed the anchor with a single step.
             selectedIds.remove(items[oldIndex].id)
             selectedIds.insert(items[newIndex].id)
         }
 
-        cursorIndex = newIndex
+        cursorId = items[newIndex].id
         onSelectionChange(selectedIds)
         withAnimation(.easeOut(duration: 0.15)) {
             proxy.scrollTo(items[newIndex].id, anchor: .center)
         }
     }
 
-    // MARK: - Actions
-
-    /// Chip that surfaces the armed confidence so the curator sees
-    /// what the next digit will commit. Lives in the matrix overlay
-    /// rather than the toolbar because the muscle-memory path "press
-    /// c, then 3" never leaves the keyboard — the chip is right above
-    /// the grid the user is already looking at.
-    private func confidenceHUD(_ confidence: Int) -> some View {
-        let label = confidence == 1 ? "quick" : "certain"
-        let tint: Color = confidence == 1 ? .orange : .green
-        return HStack(spacing: 6) {
-            Circle()
-                .fill(tint)
-                .frame(width: 8, height: 8)
-            Text("Next digit: \(label)")
-                .font(.caption.weight(.semibold))
-            Text("(Esc to cancel)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(
-            Capsule().fill(AppColors.bgToolbar(nightMode))
-        )
-        .overlay(
-            Capsule().stroke(tint.opacity(0.6), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
-    }
+    // MARK: - Rating writes
 
     private enum OrthogonalFlag { case reflection, transitional }
 
     private func applyRating(
-        _ ratingClass: RatingClass,
-        confidence: Int? = nil
+        _ ratingClass: RatingClass, confidence: Int? = nil
     ) {
         let ids = Array(selectedIds)
         guard !ids.isEmpty else { return }
@@ -424,5 +488,25 @@ struct MatrixView: View {
             }
             await onMutation()
         }
+    }
+
+    // MARK: - HUD
+
+    private func confidenceHUD(_ confidence: Int) -> some View {
+        let label = confidence == 1 ? "quick" : "certain"
+        let tint: Color = confidence == 1 ? .orange : .green
+        return HStack(spacing: 6) {
+            Circle().fill(tint).frame(width: 8, height: 8)
+            Text("Next digit: \(label)")
+                .font(.caption.weight(.semibold))
+            Text("(Esc to cancel)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Capsule().fill(AppColors.bgToolbar(nightMode)))
+        .overlay(Capsule().stroke(tint.opacity(0.6), lineWidth: 1))
+        .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
     }
 }
