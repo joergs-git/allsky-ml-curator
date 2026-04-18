@@ -1,279 +1,237 @@
 import AppKit
 import SwiftUI
 
-/// Phase-1 root view: folder-based ingest control and live counters.
-///
-/// Parity with AstroBlink — the user opens any folder via `Cmd+O` or
-/// the sidebar button, picks the camera type (Color / Monochrome), and
-/// hits Ingest. Earlier sessions remember the last folder + camera
-/// type so repeated runs are quick. The matrix view, single-image
-/// inspection view and autonomous mode land in subsequent phases.
+/// Main app shell — a toolbar over the keyboard-rating matrix, with
+/// ingest reachable as a sheet via `⌘O` or the toolbar button. When
+/// the local DB is empty the matrix is replaced by an ingest CTA.
 struct ContentView: View {
 
-    @StateObject private var ingest = IngestService()
+    // MARK: - State
 
-    @State private var selectedFolder: URL?
-    @State private var cameraType: CameraType = .color
-    @State private var imageFormat: ImageFormat = .jpg
-    @State private var dryRun: Bool = true
+    @State private var items: [ImageLibrary.ImageListItem] = []
+    @State private var selectedIds: Set<Int64> = []
+    @State private var cameraFilter: CameraType? = nil
+    @State private var onlyUnrated: Bool = false
+    @State private var columns: Int = 6
+    @State private var showIngestSheet: Bool = false
+    @State private var isLoading: Bool = false
+    @State private var nightMode: Bool = AppSettings.shared.nightMode
+
+    // MARK: - Body
 
     var body: some View {
-        HSplitView {
-            sidebar
-                .frame(minWidth: 280, maxWidth: 360)
-            ingestPane
+        VStack(spacing: 0) {
+            toolbar
+            Divider()
+            if items.isEmpty && !isLoading {
+                emptyState
+            } else {
+                matrix
+                Divider()
+                keybindLegend
+            }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onAppear {
-            restoreLastSelection()
+        .background(AppColors.bg(nightMode))
+        .task { await reload() }
+        .sheet(isPresented: $showIngestSheet, onDismiss: {
+            Task { await reload() }
+        }) {
+            IngestSheet(isPresented: $showIngestSheet)
         }
         .onReceive(NotificationCenter.default.publisher(
             for: .openAllskyFolderRequested
         )) { _ in
-            openFolderPicker()
+            showIngestSheet = true
         }
     }
 
-    // MARK: - Sidebar
+    // MARK: - Subviews
 
-    private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Status").font(.headline)
+    private var toolbar: some View {
+        HStack(spacing: 12) {
+            Button {
+                showIngestSheet = true
+            } label: {
+                Label("Ingest…", systemImage: "tray.and.arrow.down")
+            }
+            .keyboardShortcut("o", modifiers: .command)
 
-            statusRow("Supabase",
-                      ok: SupabaseClient.shared.loadConfig() != nil,
-                      okMsg: "weather enrichment enabled",
-                      failMsg: "optional — set in Preferences → Supabase")
+            Divider().frame(height: 20)
 
-            statusRow("Folder",
-                      ok: selectedFolder != nil,
-                      okMsg: selectedFolder?.path ?? "",
-                      failMsg: "pick a folder with Cmd+O or the button below")
+            Picker("Camera", selection: $cameraFilter) {
+                Text("All cameras").tag(CameraType?.none)
+                ForEach(CameraType.allCases, id: \.self) { type in
+                    Text(type.displayName).tag(CameraType?.some(type))
+                }
+            }
+            .pickerStyle(.menu)
+            .frame(maxWidth: 220)
+            .onChange(of: cameraFilter) { _, _ in
+                Task { await reload() }
+            }
 
-            Divider()
+            Toggle("Only unrated", isOn: $onlyUnrated)
+                .onChange(of: onlyUnrated) { _, _ in
+                    Task { await reload() }
+                }
 
-            Button { openFolderPicker() } label: {
-                Label("Open Folder…  (⌘O)", systemImage: "folder.badge.plus")
-                    .frame(maxWidth: .infinity)
+            Spacer()
+
+            HStack(spacing: 6) {
+                Text("Grid")
+                    .font(.caption)
+                    .foregroundStyle(AppColors.fgDim(nightMode))
+                Picker("", selection: $columns) {
+                    Text("4").tag(4)
+                    Text("6").tag(6)
+                    Text("8").tag(8)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 120)
+                .labelsHidden()
+            }
+
+            Toggle("Night", isOn: $nightMode)
+                .toggleStyle(.switch)
+                .onChange(of: nightMode) { _, new in
+                    AppSettings.shared.nightMode = new
+                }
+
+            summaryChip
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(AppColors.bgToolbar(nightMode))
+    }
+
+    private var summaryChip: some View {
+        VStack(alignment: .trailing, spacing: 1) {
+            Text("\(items.count) frames")
+                .font(.caption)
+                .foregroundStyle(AppColors.fg(nightMode))
+            let rated = items.filter { ($0.label?.ratingClass ?? .unrated) != .unrated }.count
+            Text("\(rated) rated · \(selectedIds.count) selected")
+                .font(.caption2)
+                .foregroundStyle(AppColors.fgDim(nightMode))
+        }
+    }
+
+    private var matrix: some View {
+        MatrixView(
+            items: items,
+            columns: columns,
+            nightMode: nightMode,
+            onSelectionChange: { selectedIds = $0 },
+            onMutation: { await reload() }
+        )
+    }
+
+    private var keybindLegend: some View {
+        HStack(spacing: 8) {
+            legendRatingChip(key: "0", ratingClass: .unrated,   label: "unrated")
+            legendRatingChip(key: "1", ratingClass: .fullCloud, label: "full clouds")
+            legendRatingChip(key: "2", ratingClass: .mostly,    label: "mostly")
+            legendRatingChip(key: "3", ratingClass: .some,      label: "some clouds")
+            legendRatingChip(key: "4", ratingClass: .thin,      label: "thin / dust")
+            legendRatingChip(key: "5", ratingClass: .clear,     label: "clear")
+
+            Divider().frame(height: 18)
+
+            legendFlagChip(key: "R", color: AppColors.reflectionFlag(nightMode),
+                           label: "reflection (sun / moon on the dome)")
+            legendFlagChip(key: "T", color: AppColors.transitionalFlag(nightMode),
+                           label: "transitional (dusk / gain-settling garbage)")
+
+            Spacer()
+
+            Text("arrows / page / home-end nav · shift extends · ⌘A select all")
+                .font(.caption)
+                .foregroundStyle(AppColors.fgVeryDim(nightMode))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(AppColors.bgToolbar(nightMode))
+    }
+
+    private func legendRatingChip(
+        key: String, ratingClass: RatingClass, label: String
+    ) -> some View {
+        legendChip(
+            key: key,
+            keyBackground: ratingClass == .unrated
+                ? AppColors.bgControl(nightMode)
+                : AppColors.tier(ratingClass, night: nightMode),
+            keyForeground: ratingClass == .unrated
+                ? AppColors.fgDim(nightMode)
+                : Color.white,
+            label: label
+        )
+    }
+
+    private func legendFlagChip(
+        key: String, color: Color, label: String
+    ) -> some View {
+        legendChip(
+            key: key,
+            keyBackground: color,
+            keyForeground: .white,
+            label: label
+        )
+    }
+
+    private func legendChip(
+        key: String,
+        keyBackground: Color,
+        keyForeground: Color,
+        label: String
+    ) -> some View {
+        VStack(spacing: 3) {
+            Text(key)
+                .font(.system(size: 11, weight: .black, design: .monospaced))
+                .frame(minWidth: 20)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(keyBackground)
+                .foregroundStyle(keyForeground)
+                .clipShape(RoundedRectangle(cornerRadius: 3))
+            Text(label)
+                .font(.system(size: 10))
+                .foregroundStyle(AppColors.fgDim(nightMode))
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "photo.on.rectangle.angled")
+                .font(.system(size: 48, weight: .light))
+                .foregroundStyle(AppColors.fgVeryDim(nightMode))
+            Text("No images indexed yet")
+                .font(.title3)
+                .foregroundStyle(AppColors.fg(nightMode))
+            Text("Pick a folder of allsky JPGs — the app scans it recursively, attaches weather + sidecar metadata, and shows the matrix here for rating.")
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 480)
+                .foregroundStyle(AppColors.fgDim(nightMode))
+            Button("Open Folder…  (⌘O)") {
+                showIngestSheet = true
             }
             .controlSize(.large)
-
-            Divider()
-
-            Text("Labels")
-                .font(.headline)
-            Text("Matrix + rating UI arrives in Phase 3.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Spacer()
         }
         .padding()
-        .background(AppColors.bgToolbar(AppSettings.shared.nightMode))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func statusRow(_ label: String, ok: Bool, okMsg: String, failMsg: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                .foregroundStyle(ok ? .green : .orange)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(label).font(.subheadline)
-                Text(ok ? okMsg : failMsg)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .truncationMode(.middle)
-            }
-        }
-    }
+    // MARK: - Data loading
 
-    // MARK: - Ingest pane
-
-    private var ingestPane: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Ingest").font(.title2)
-            Text("Scan a folder of allsky JPG/FITS images, pre-compute ephemeris + reflection + transitional scores, and (if Supabase is configured) enrich every frame with the nearest CloudWatcher reading within ±5 min.")
-                .font(.body)
-                .foregroundStyle(.secondary)
-
-            controls
-            Divider()
-            counters
-
-            if let message = ingest.lastError {
-                Text("⚠️ \(message)")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .textSelection(.enabled)
-            }
-
-            Spacer()
-        }
-        .padding()
-    }
-
-    private var controls: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Folder:")
-                    .frame(width: 70, alignment: .trailing)
-                if let url = selectedFolder {
-                    Text(url.path)
-                        .font(.callout)
-                        .textSelection(.enabled)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                } else {
-                    Text("none — use ⌘O or the sidebar button")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("Change…") { openFolderPicker() }
-            }
-
-            HStack {
-                Text("Camera:")
-                    .frame(width: 70, alignment: .trailing)
-                Picker("", selection: $cameraType) {
-                    ForEach(CameraType.allCases, id: \.self) { type in
-                        Text(type.displayName).tag(type)
-                    }
-                }
-                .labelsHidden()
-                .frame(maxWidth: 220)
-                .onChange(of: cameraType) { _, newValue in
-                    AppSettings.shared.lastCameraTypeRaw = newValue.rawValue
-                }
-                Spacer()
-            }
-
-            HStack {
-                Text("Format:")
-                    .frame(width: 70, alignment: .trailing)
-                Picker("", selection: $imageFormat) {
-                    ForEach(ImageFormat.allCases, id: \.self) { fmt in
-                        Text(fmt.displayName)
-                            .tag(fmt)
-                    }
-                }
-                .labelsHidden()
-                .frame(maxWidth: 220)
-                .onChange(of: imageFormat) { _, newValue in
-                    AppSettings.shared.lastImageFormatRaw = newValue.rawValue
-                }
-                if !imageFormat.isSupportedInCurrentBuild {
-                    Text("(indexed only — loading lands in v1.1)")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-                Spacer()
-            }
-
-            Toggle("Dry-run (scan + count only, no DB writes)", isOn: $dryRun)
-
-            HStack {
-                Button(ingest.isRunning ? "Working…" : (dryRun ? "Dry-run" : "Ingest")) {
-                    startIngest()
-                }
-                .keyboardShortcut(.return, modifiers: .command)
-                .disabled(ingest.isRunning || selectedFolder == nil)
-
-                Button("Cancel") { ingest.cancel() }
-                    .disabled(!ingest.isRunning)
-
-                Spacer()
-                Text(ingest.statusMessage)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private var counters: some View {
-        Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
-            GridRow {
-                counterCell("Total files",   value: ingest.totalFiles)
-                counterCell("Processed",     value: ingest.processed)
-            }
-            GridRow {
-                counterCell("Inserted",      value: ingest.inserted)
-                counterCell("Excluded (mono/day)", value: ingest.excluded)
-            }
-            GridRow {
-                counterCell("No timestamp",  value: ingest.skippedNoTimestamp)
-                counterCell("Unsupported extension", value: ingest.skippedUnknownExtension)
-            }
-            GridRow {
-                counterCell("Reflection risk ≥ 0.5",  value: ingest.reflectionFlagged)
-                counterCell("Transitional risk ≥ 0.7", value: ingest.transitionalFlagged)
-            }
-            GridRow {
-                counterCell("Weather-enriched", value: ingest.enrichedWithWeather)
-                counterCell("Meta-sidecar found",  value: ingest.enrichedWithMeta)
-            }
-        }
-    }
-
-    private func counterCell(_ label: String, value: Int) -> some View {
-        HStack(spacing: 8) {
-            Text("\(value)")
-                .font(.system(.title3, design: .monospaced))
-                .frame(minWidth: 72, alignment: .trailing)
-            Text(label)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    // MARK: - Actions
-
-    private func openFolderPicker() {
-        let panel = NSOpenPanel()
-        panel.title = "Choose an allsky image folder"
-        panel.message = "Pick the root folder — the app scans it recursively for JPG and FITS files."
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Choose"
-        if let current = selectedFolder {
-            panel.directoryURL = current.deletingLastPathComponent()
-        } else if let last = AppSettings.shared.lastIngestedFolderPath {
-            panel.directoryURL = URL(fileURLWithPath: last)
-        }
-
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        selectedFolder = url
-        AppSettings.shared.lastIngestedFolderPath = url.path
-    }
-
-    private func restoreLastSelection() {
-        if let raw = AppSettings.shared.lastCameraTypeRaw,
-           let saved = CameraType(rawValue: raw) {
-            cameraType = saved
-        }
-        if let raw = AppSettings.shared.lastImageFormatRaw,
-           let saved = ImageFormat(rawValue: raw) {
-            imageFormat = saved
-        }
-        // Folder access from the last session is not persisted in v1 —
-        // the path is shown as a breadcrumb so the user can re-pick it
-        // with one click (⌘O).
-        if selectedFolder == nil, let path = AppSettings.shared.lastIngestedFolderPath {
-            selectedFolder = URL(fileURLWithPath: path)
-        }
-    }
-
-    private func startIngest() {
-        guard let folder = selectedFolder else { return }
-        Task {
-            await ingest.ingestFolder(
-                folder,
-                cameraType: cameraType,
-                imageFormat: imageFormat,
-                dryRun: dryRun
-            )
-        }
+    private func reload() async {
+        isLoading = true
+        let loaded = await ImageLibrary.shared.fetchImages(
+            cameraType: cameraFilter,
+            onlyUnrated: onlyUnrated
+        )
+        items = loaded
+        selectedIds.formIntersection(Set(loaded.map(\.id)))
+        isLoading = false
     }
 }
 
