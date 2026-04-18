@@ -23,6 +23,7 @@ struct ContentView: View {
     @State private var onlyUnrated: Bool = false
     @State private var columns: Int = 6
     @State private var showIngestSheet: Bool = false
+    @State private var showInfoPopover: Bool = false
     @State private var isLoading: Bool = false
     @State private var nightMode: Bool = AppSettings.shared.nightMode
 
@@ -82,18 +83,28 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Subviews
+    // MARK: - Toolbar
 
+    /// Doubled-height toolbar with a brand badge, Ingest button,
+    /// filter controls, and three gauge-style status chips on the
+    /// right. A trailing ⓘ button opens a floating info popover with
+    /// the full live state.
     private var toolbar: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 16) {
+            brandBadge
+
+            Divider().frame(height: 42)
+
             Button {
                 showIngestSheet = true
             } label: {
                 Label("Ingest…", systemImage: "tray.and.arrow.down")
+                    .font(.body.weight(.medium))
             }
+            .controlSize(.large)
             .keyboardShortcut("o", modifiers: .command)
 
-            Divider().frame(height: 20)
+            Divider().frame(height: 42)
 
             Picker("Camera", selection: $cameraFilter) {
                 Text("All cameras").tag(CameraType?.none)
@@ -112,8 +123,6 @@ struct ContentView: View {
                 .onChange(of: onlyUnrated) { _, _ in
                     Task { await reload() }
                 }
-
-            Spacer()
 
             HStack(spacing: 6) {
                 Text("Grid")
@@ -135,38 +144,70 @@ struct ContentView: View {
                     AppSettings.shared.nightMode = new
                 }
 
-            classifierChip
-            embeddingChip
-            syncChip
+            Spacer()
 
-            summaryChip
+            classifierGauge
+            embeddingGauge
+            syncGauge
+
+            infoButton
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(height: 74)
         .background(AppColors.bgToolbar(nightMode))
     }
 
-    /// Classifier chip — shows training status + current agreement
-    /// and a "Train" button (⌘T) that kicks off a fresh retrain on
-    /// every human label currently in the DB.
-    private var classifierChip: some View {
+    // MARK: - Brand
+
+    private var brandBadge: some View {
+        HStack(spacing: 10) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(
+                        LinearGradient(
+                            colors: [.blue.opacity(0.85), .purple.opacity(0.75)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 44, height: 44)
+                    .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
+                Image(systemName: "camera.metering.matrix")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(.white)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text("AllSky")
+                    .font(.system(size: 15, weight: .black, design: .rounded))
+                    .foregroundStyle(AppColors.fg(nightMode))
+                Text("ML Curator")
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundStyle(AppColors.fgDim(nightMode))
+            }
+        }
+    }
+
+    // MARK: - Gauges
+
+    /// Circular accuracy gauge that doubles as the Train button. Fills
+    /// with the last training accuracy; pulses its icon while a train
+    /// is in flight.
+    private var classifierGauge: some View {
         Button {
             Task { await classifier.train() }
         } label: {
-            HStack(spacing: 5) {
-                Image(systemName: classifier.isTraining ? "hourglass" : "sparkles")
-                    .foregroundStyle(
-                        classifier.isTraining ? Color.blue
-                        : (classifier.summary == nil
-                           ? AppColors.fgDim(nightMode)
-                           : Color.green)
-                    )
-                Text(classifierStatusText)
-                    .font(.caption)
-                    .foregroundStyle(classifier.lastError != nil
-                                     ? Color.red
-                                     : AppColors.fgDim(nightMode))
-            }
+            GaugeChip(
+                title: "Classifier",
+                value: Double(classifier.summary?.trainAccuracy ?? 0),
+                range: 0...1,
+                primaryText: classifierPrimaryText,
+                secondaryText: classifierSecondaryText,
+                iconName: classifier.isTraining ? "sparkles" : "brain.head.profile",
+                iconAnimates: classifier.isTraining,
+                tint: classifierTint,
+                nightMode: nightMode
+            )
         }
         .buttonStyle(.plain)
         .help(classifier.lastError ?? "Retrain classifier on every current human label (⌘T)")
@@ -174,89 +215,143 @@ struct ContentView: View {
         .disabled(classifier.isTraining)
     }
 
-    private var classifierStatusText: String {
+    private var classifierPrimaryText: String {
+        if let summary = classifier.summary {
+            return "\(Int(summary.trainAccuracy * 100))%"
+        }
+        if let coverage = classifier.lastCoverage,
+           coverage.totalRated > 0 {
+            return "\(coverage.withEmbedding)/\(coverage.totalRated)"
+        }
+        return "—"
+    }
+
+    private var classifierSecondaryText: String {
         if classifier.isTraining { return "training…" }
         if let summary = classifier.summary {
-            let acc = Int(summary.trainAccuracy * 100)
-            return "\(summary.sampleCount) labels · \(acc)% train"
+            return "\(summary.sampleCount) labels"
         }
-        if let coverage = classifier.lastCoverage {
-            // Show the embedded / rated ratio + class spread so the
-            // user sees at a glance whether Train will succeed.
-            let spread = coverage.classCounts
-                .enumerated()
-                .filter { $0.element > 0 }
-                .map { "\($0.offset + 1):\($0.element)" }
-                .joined(separator: " ")
-            return "\(coverage.withEmbedding) / \(coverage.totalRated) rated embedded · classes [\(spread)]"
-        }
-        return "untrained"
+        if classifier.lastCoverage != nil { return "untrained" }
+        return "no labels"
     }
 
-    /// Embedding coverage — counts how many Vision feature-print
-    /// sidecars are on disk vs. how many frames are in the current
-    /// filter. Gives the user a feel for how far the background
-    /// generator has progressed before Phase-5b training.
-    private var embeddingChip: some View {
-        HStack(spacing: 5) {
-            Image(systemName: embeddedCount >= items.count ? "brain.fill" : "brain")
-                .foregroundStyle(embeddedCount >= items.count
-                                 ? Color.green : AppColors.fgDim(nightMode))
-            Text("embed \(embeddedCount) / \(items.count)")
-                .font(.caption)
-                .foregroundStyle(AppColors.fgDim(nightMode))
-        }
-        .help("Vision FeaturePrint cache coverage — warms up in the background as you scroll")
+    private var classifierTint: Color {
+        if classifier.lastError != nil { return .red }
+        if classifier.isTraining       { return .blue }
+        if classifier.summary != nil   { return .green }
+        return .orange
     }
 
-    /// Toolbar chip showing the current Supabase-sync status. Tapping
-    /// (or ⌘S) triggers an immediate push of any unsynced labels.
-    private var syncChip: some View {
+    /// Horizontal progress gauge for embedding coverage. Animates when
+    /// the warmer is making progress.
+    private var embeddingGauge: some View {
+        GaugeChip(
+            title: "Embeddings",
+            value: Double(embeddedCount),
+            range: 0...Double(max(items.count, 1)),
+            primaryText: "\(embeddedCount) / \(items.count)",
+            secondaryText: embeddedCount >= max(items.count, 1)
+                ? "complete"
+                : "warming…",
+            iconName: "cpu",
+            iconAnimates: embeddedCount < items.count && items.count > 0,
+            tint: embeddedCount >= max(items.count, 1) ? .green : .blue,
+            nightMode: nightMode
+        )
+        .help("Vision FeaturePrint sidecar coverage — warms in the background")
+    }
+
+    /// Sync gauge — no percentage, just a status orb + timestamp.
+    private var syncGauge: some View {
         Button {
             Task { await sync.pushPending() }
         } label: {
-            HStack(spacing: 5) {
-                Image(systemName: syncIcon)
-                    .foregroundStyle(syncIconColor)
-                Text(sync.status.statusText)
-                    .font(.caption)
-                    .foregroundStyle(sync.status.isProblem
-                                     ? Color.red
-                                     : AppColors.fgDim(nightMode))
-            }
+            GaugeChip(
+                title: "Sync",
+                value: syncGaugeValue,
+                range: 0...1,
+                primaryText: syncPrimaryText,
+                secondaryText: syncSecondaryText,
+                iconName: syncIcon,
+                iconAnimates: sync.status.isPushing,
+                tint: syncTint,
+                nightMode: nightMode
+            )
         }
         .buttonStyle(.plain)
         .help("Push unsynced labels to Supabase (⌘S)")
         .keyboardShortcut("s", modifiers: .command)
     }
 
+    private var syncGaugeValue: Double {
+        switch sync.status {
+        case .upToDate:   return 1
+        case .pushing(let pushed, let total):
+            return total > 0 ? Double(pushed) / Double(total) : 0.5
+        case .failed, .idle, .notConfigured:
+            return 0
+        }
+    }
+
+    private var syncPrimaryText: String {
+        switch sync.status {
+        case .idle:            return "—"
+        case .notConfigured:   return "off"
+        case .pushing(let n, let t): return "\(n)/\(t)"
+        case .upToDate:        return "✓"
+        case .failed:          return "!"
+        }
+    }
+
+    private var syncSecondaryText: String {
+        switch sync.status {
+        case .idle:                  return "idle"
+        case .notConfigured:         return "not set"
+        case .pushing:               return "pushing"
+        case .upToDate(_, let at):   return at.formatted(date: .omitted, time: .shortened)
+        case .failed:                return "failed"
+        }
+    }
+
     private var syncIcon: String {
         switch sync.status {
-        case .idle, .notConfigured: return "arrow.triangle.2.circlepath"
+        case .idle, .notConfigured: return "icloud.slash"
         case .pushing:              return "arrow.up.circle"
-        case .upToDate:             return "checkmark.icloud"
-        case .failed:               return "exclamationmark.icloud"
+        case .upToDate:             return "checkmark.icloud.fill"
+        case .failed:               return "exclamationmark.icloud.fill"
         }
     }
 
-    private var syncIconColor: Color {
+    private var syncTint: Color {
         switch sync.status {
-        case .upToDate:  return .green
-        case .failed:    return .red
-        case .pushing:   return .blue
-        default:         return AppColors.fgDim(nightMode)
+        case .upToDate: return .green
+        case .pushing:  return .blue
+        case .failed:   return .red
+        default:        return .gray
         }
     }
 
-    private var summaryChip: some View {
-        VStack(alignment: .trailing, spacing: 1) {
-            Text("\(items.count) frames")
-                .font(.caption)
-                .foregroundStyle(AppColors.fg(nightMode))
-            let rated = items.filter { ($0.label?.ratingClass ?? .unrated) != .unrated }.count
-            Text("\(rated) rated · \(selectedIds.count) selected")
-                .font(.caption2)
+    // MARK: - Info popover
+
+    private var infoButton: some View {
+        Button {
+            showInfoPopover.toggle()
+        } label: {
+            Image(systemName: "info.circle")
+                .font(.system(size: 22, weight: .medium))
                 .foregroundStyle(AppColors.fgDim(nightMode))
+        }
+        .buttonStyle(.plain)
+        .help("Live status & coverage details")
+        .popover(isPresented: $showInfoPopover, arrowEdge: .top) {
+            InfoPopoverContent(
+                items: items,
+                selectedIds: selectedIds,
+                embeddedCount: embeddedCount,
+                classifier: classifier,
+                sync: sync
+            )
+            .frame(width: 420)
         }
     }
 
