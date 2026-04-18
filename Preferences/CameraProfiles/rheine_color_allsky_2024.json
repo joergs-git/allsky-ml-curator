@@ -1,0 +1,53 @@
+{
+  "$schema": "../camera_profile.schema.json",
+  "id": "rheine_color_allsky_2024",
+  "display_name": "Rheine color allsky 2024",
+  "site": {
+    "name": "Rheine",
+    "latitude_deg": 52.17,
+    "longitude_deg": 7.25,
+    "timezone": "Europe/Berlin"
+  },
+  "sensor": {
+    "type": "color",
+    "description": "Color allsky camera under shared plexiglass dome",
+    "day_capable": true,
+    "pixel_width": 1920,
+    "pixel_height": 1080,
+    "bayer_pattern": "RGGB",
+    "bit_depth": 8,
+    "file_format": "jpg"
+  },
+  "fisheye": {
+    "comment": "PLACEHOLDER VALUES — calibrate from a sample frame before first run.",
+    "center_x_px": 960,
+    "center_y_px": 540,
+    "radius_px": 500,
+    "ellipse_ratio": 1.0
+  },
+  "overlay_mask_rects_px": [
+    {
+      "comment": "PLACEHOLDER — measure actual overlay text rectangles on a sample frame",
+      "x": 0,
+      "y": 0,
+      "width": 0,
+      "height": 0
+    }
+  ],
+  "orientation": {
+    "comment": "v2.0 cloud-motion feature uses this. PLACEHOLDER — calibrate with a known star on the horizon.",
+    "north_azimuth_deg_at_pixel_up": 0.0,
+    "rotation_clockwise": true
+  },
+  "file_path_patterns": {
+    "nas_base": "/volume1/AllSky-Rheine",
+    "supabase_column": "allsky_url",
+    "typical_subdirectory": "{YYYY-MM-DD}/jpg"
+  },
+  "calibration": {
+    "calibrated_at": null,
+    "calibrated_by": null,
+    "notes": "Placeholder profile. Replace all *px* values with measured coordinates and define overlay_mask_rects_px from a real sample frame before the SkyDiskMask pipeline is usable."
+  },
+  "schema_version": 1
+}

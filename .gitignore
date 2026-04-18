@@ -1,0 +1,49 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Xcode
+DerivedData/
+xcuserdata/
+*.xccheckout
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+build/
+
+# Generated Xcode project (produced by `xcodegen generate`)
+AllskyMLCurator.xcodeproj/
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Instruments
+*.trace
+
+# User-specific
+*.xcuserstate
+*.xcscmblueprint
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+
+# Claude Code private dev files
+.claude/
+tasks/
+
+# Dev-only
+default.profraw
+
+# Test / sample image caches (too large for git)
+TestImages/
+ThumbnailCache/
+EmbeddingCache/
+.featureprint

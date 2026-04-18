@@ -1,0 +1,59 @@
+{
+  "$schema": "../camera_profile.schema.json",
+  "id": "rheine_mono_zwo_asi290_2024",
+  "display_name": "Rheine monochrome ZWO ASI290MM allsky 2024",
+  "site": {
+    "name": "Rheine",
+    "latitude_deg": 52.17,
+    "longitude_deg": 7.25,
+    "timezone": "Europe/Berlin"
+  },
+  "sensor": {
+    "type": "monochrome",
+    "description": "ZWO ASI290MM monochrome under shared plexiglass dome; no daylight mode",
+    "day_capable": false,
+    "day_exclusion_sun_alt_deg": -6.0,
+    "pixel_width": 1936,
+    "pixel_height": 1096,
+    "bit_depth": 16,
+    "file_format": "fits"
+  },
+  "fisheye": {
+    "comment": "PLACEHOLDER VALUES — calibrate from a sample FITS frame before first run.",
+    "center_x_px": 968,
+    "center_y_px": 548,
+    "radius_px": 520,
+    "ellipse_ratio": 1.0
+  },
+  "overlay_mask_rects_px": [
+    {
+      "comment": "FITS frames typically have no burned-in overlay; the derived JPG might. Leave empty unless the derived-JPG variant is used.",
+      "x": 0,
+      "y": 0,
+      "width": 0,
+      "height": 0
+    }
+  ],
+  "orientation": {
+    "comment": "v2.0 cloud-motion feature uses this. PLACEHOLDER — calibrate with a known star on the horizon.",
+    "north_azimuth_deg_at_pixel_up": 0.0,
+    "rotation_clockwise": true
+  },
+  "file_path_patterns": {
+    "nas_base": "/volume1/AllSky-Rheine/zwo",
+    "supabase_columns": ["zwo_url", "zwo_fits_url"],
+    "typical_subdirectory": "{YYYY-MM-DD}/fits"
+  },
+  "stf": {
+    "comment": "Midtones-transfer-function stretch parameters for FITS rendering in v1.1+. Reuse the AstroTriage-blinkV2 auto-STF kernel.",
+    "mode": "auto",
+    "shadows_clip_sigma": 2.8,
+    "target_background": 0.25
+  },
+  "calibration": {
+    "calibrated_at": null,
+    "calibrated_by": null,
+    "notes": "Placeholder profile. Replace all *px* values with measured coordinates from a real FITS frame. Mono camera auto-excludes any frame where sun_alt_deg > day_exclusion_sun_alt_deg."
+  },
+  "schema_version": 1
+}
