@@ -124,13 +124,26 @@ final class ClassifierEngine: ObservableObject {
     // MARK: - Config
 
     private struct Hyperparameters {
-        var iterations: Int = 200
-        var learningRate: Float = 0.05
-        var l2: Float = 5e-4
-        var clearClassBoost: Float = 3.0
+        var iterations: Int
+        var learningRate: Float
+        var l2: Float
+        var clearClassBoost: Float
+
+        /// Read live from AppSettings so the Preferences → Training
+        /// sliders take effect on the *next* ⌘T without needing to
+        /// restart the app. Re-instantiated at the start of every
+        /// train() call.
+        static func current() -> Hyperparameters {
+            Hyperparameters(
+                iterations: AppSettings.shared.trainingIterations,
+                learningRate: Float(AppSettings.shared.trainingLearningRate),
+                l2: Float(AppSettings.shared.trainingL2),
+                clearClassBoost: Float(AppSettings.shared.clearClassBoost)
+            )
+        }
     }
 
-    private let hp = Hyperparameters()
+    private var hp = Hyperparameters.current()
     private let numClasses = 5    // RatingClass 1…5
 
     /// Trained parameters: row-major W [numFeatures × numClasses] and
@@ -149,6 +162,11 @@ final class ClassifierEngine: ObservableObject {
         isTraining = true
         lastError = nil
         defer { isTraining = false }
+
+        // Re-read hyperparameters so changes made in Preferences →
+        // Training between runs take effect on the next ⌘T without a
+        // restart.
+        hp = Hyperparameters.current()
 
         do {
             let started = Date()

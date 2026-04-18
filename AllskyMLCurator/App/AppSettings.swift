@@ -190,11 +190,45 @@ final class AppSettings {
 
     // MARK: - ML training
 
+    /// Gradient-descent learning rate for the logistic-regression head.
+    /// Larger values converge faster but overshoot; 0.05 is the v1 default.
+    var trainingLearningRate: Double {
+        get { defaults.double(forKey: Key.trainingLR, default: 0.05) }
+        set { defaults.set(newValue, forKey: Key.trainingLR) }
+    }
+
+    /// Number of GD iterations per `train()` call. At Rheine's data
+    /// scale 200 is usually enough; raising this helps when the loss
+    /// hasn't flattened yet in the live status line.
+    var trainingIterations: Int {
+        get { defaults.integer(forKey: Key.trainingIter, default: 200) }
+        set { defaults.set(newValue, forKey: Key.trainingIter) }
+    }
+
+    /// L2 regularisation strength. Nudges weights toward zero to keep
+    /// the model honest on a small training set.
+    var trainingL2: Double {
+        get { defaults.double(forKey: Key.trainingL2, default: 5e-4) }
+        set { defaults.set(newValue, forKey: Key.trainingL2) }
+    }
+
     /// Multiplicative boost applied to rare clear-sky classes (4 and 5)
     /// on top of inverse-frequency weighting.
     var clearClassBoost: Double {
         get { defaults.double(forKey: Key.clearBoost, default: 3.0) }
         set { defaults.set(newValue, forKey: Key.clearBoost) }
+    }
+
+    /// Reset every training-side and autonomous-mode hyperparameter to
+    /// its v1 default. Leaves camera / observatory / Supabase settings
+    /// untouched. Used by the "Reset to defaults" button in Prefs → ML.
+    func resetTrainingHyperparameters() {
+        defaults.removeObject(forKey: Key.trainingLR)
+        defaults.removeObject(forKey: Key.trainingIter)
+        defaults.removeObject(forKey: Key.trainingL2)
+        defaults.removeObject(forKey: Key.clearBoost)
+        defaults.removeObject(forKey: Key.autonomousMin)
+        defaults.removeObject(forKey: Key.autonomousConfidence)
     }
 
     // MARK: - Appearance
@@ -228,6 +262,9 @@ final class AppSettings {
         static let autonomousMin = "autonomous.minLabels"
         static let autonomousConfidence = "autonomous.confidenceThreshold"
         static let clearBoost = "ml.clearClassBoost"
+        static let trainingLR = "ml.learningRate"
+        static let trainingIter = "ml.iterations"
+        static let trainingL2 = "ml.l2"
         static let nightMode = "appearance.nightMode"
     }
 }
