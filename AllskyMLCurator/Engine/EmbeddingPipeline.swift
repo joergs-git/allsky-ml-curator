@@ -102,17 +102,33 @@ final class EmbeddingPipeline: @unchecked Sendable {
 
         let key = cacheKey(for: imagePath)
         if let existing = inflight.withLock({ $0[key] }) {
+            // Join an in-flight extraction instead of starting a duplicate.
+            // Cancellation of *this* call is propagated to the shared task
+            // only when every joiner cancels — otherwise a scroll-off
+            // shouldn't tear down work another caller still wants.
             return await existing.value
         }
 
-        let task = Task.detached(priority: .utility) { [self] () -> Embedding? in
+        // Non-detached Task: inherits the caller's cancellation, so a
+        // tile scrolling off the screen can cancel the extraction it
+        // kicked off. Previously Task.detached orphaned the work — with
+        // 20k+ tiles the resulting 20k+ pending extractions piled up on
+        // the 3-slot semaphore and starved the thumbnail pipeline
+        // sharing the same SMB channel.
+        let task = Task { [self] () -> Embedding? in
             defer { inflight.withLock { $0[key] = nil } }
+            guard !Task.isCancelled else { return nil }
             await extractionSemaphore.acquire()
             defer { Task { await extractionSemaphore.release() } }
+            guard !Task.isCancelled else { return nil }
             return await self.extract(imagePath: imagePath, cameraType: cameraType)
         }
         inflight.withLock { $0[key] = task }
-        return await task.value
+        return await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     // MARK: - Extraction

@@ -90,16 +90,26 @@ final class ThumbnailCache: @unchecked Sendable {
             return await existing.value
         }
 
-        let task = Task.detached(priority: .utility) { [self] () -> NSImage? in
+        // Non-detached Task so the tile's `.task(id:)` cancellation
+        // reaches in here — when the tile scrolls off, the thumbnail
+        // pipeline bails early instead of burning an SMB read that
+        // will never be displayed.
+        let task = Task { [self] () -> NSImage? in
             defer { inflight.withLock { $0[key] = nil } }
+            guard !Task.isCancelled else { return nil }
             await generationSemaphore.acquire()
             defer { Task { await generationSemaphore.release() } }
+            guard !Task.isCancelled else { return nil }
             return await generateOnWorker(
                 for: imagePath, cameraType: cameraType
             )
         }
         inflight.withLock { $0[key] = task }
-        return await task.value
+        return await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     // MARK: - Generation
