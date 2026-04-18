@@ -165,8 +165,21 @@ struct MatrixView: View {
         let pageStep = max(columns, columns * 5)
 
         switch press.key {
-        case .leftArrow:   moveCursor(by: -1,         extend: shift, proxy: proxy); return .handled
-        case .rightArrow:  moveCursor(by: +1,         extend: shift, proxy: proxy); return .handled
+        case .leftArrow:
+            // Shift+Left/Right mutate the selection by exactly one tile
+            // (add or remove depending on whether we're moving away from
+            // or back toward the anchor). The row-aligned rectangle
+            // model is intentionally *not* used here — otherwise
+            // pressing Shift+Left after Shift+Down would snap the
+            // whole multi-row block back to a single row, surprising
+            // the user who only wanted to trim one cell.
+            if shift { shiftHorizontalStep(-1, proxy: proxy) }
+            else     { moveCursor(by: -1, extend: false, proxy: proxy) }
+            return .handled
+        case .rightArrow:
+            if shift { shiftHorizontalStep(+1, proxy: proxy) }
+            else     { moveCursor(by: +1, extend: false, proxy: proxy) }
+            return .handled
         case .upArrow:     moveCursor(by: -columns,   extend: shift, proxy: proxy); return .handled
         case .downArrow:   moveCursor(by: +columns,   extend: shift, proxy: proxy); return .handled
         case .pageUp:      moveCursor(by: -pageStep,  extend: shift, proxy: proxy); return .handled
@@ -234,6 +247,48 @@ struct MatrixView: View {
         onSelectionChange(selectedIds)
         withAnimation(.easeOut(duration: 0.15)) {
             proxy.scrollTo(targetId, anchor: .center)
+        }
+    }
+
+    /// Surgical ±1 cell modification for Shift+Left/Right. Independent
+    /// of any row-aligned rectangle: when the cursor moves away from
+    /// the anchor we insert the new cell; when it moves back toward
+    /// the anchor we remove the cell we just left. This lets the user
+    /// build a multi-row block with Shift+Down and then trim/extend a
+    /// single tile at a time horizontally without collapsing the rest
+    /// of the selection.
+    private func shiftHorizontalStep(
+        _ delta: Int, proxy: ScrollViewProxy
+    ) {
+        guard !items.isEmpty else { return }
+        let oldIndex = cursorIndex
+        let newIndex = max(0, min(items.count - 1, oldIndex + delta))
+        guard newIndex != oldIndex else { return }
+
+        let clampedAnchor = max(0, min(items.count - 1, selectionAnchor))
+        let oldDistance = abs(oldIndex - clampedAnchor)
+        let newDistance = abs(newIndex - clampedAnchor)
+
+        if newDistance > oldDistance {
+            // Moving farther from the anchor — extend the selection
+            // onto the new cell.
+            selectedIds.insert(items[newIndex].id)
+        } else if newDistance < oldDistance {
+            // Moving back toward the anchor — release the cell we're
+            // leaving. The new cursor cell stays selected because it
+            // was already covered by the prior row-aligned block.
+            selectedIds.remove(items[oldIndex].id)
+        } else {
+            // Crossed the anchor with a single step (only possible at
+            // |oldIndex - anchor| == 0 boundary). Swap the two.
+            selectedIds.remove(items[oldIndex].id)
+            selectedIds.insert(items[newIndex].id)
+        }
+
+        cursorIndex = newIndex
+        onSelectionChange(selectedIds)
+        withAnimation(.easeOut(duration: 0.15)) {
+            proxy.scrollTo(items[newIndex].id, anchor: .center)
         }
     }
 
