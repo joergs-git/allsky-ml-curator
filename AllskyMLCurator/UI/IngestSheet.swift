@@ -11,7 +11,7 @@ import SwiftUI
 struct IngestSheet: View {
 
     @Binding var isPresented: Bool
-    @StateObject private var ingest = IngestService()
+    @StateObject private var ingest = IngestService.shared
 
     @State private var selectedFolder: URL?
     @State private var cameraType: CameraType = .color

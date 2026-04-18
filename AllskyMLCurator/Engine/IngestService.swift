@@ -22,6 +22,15 @@ import SwiftUI
 @MainActor
 final class IngestService: ObservableObject {
 
+    // MARK: - Singleton
+
+    /// Shared instance so both ingest sheets (folder-walk and
+    /// weather-filtered) observe the same published progress state.
+    /// Without a singleton each sheet would get its own `@StateObject`
+    /// and the progress counters would reset when either sheet
+    /// re-mounted.
+    static let shared = IngestService()
+
     // MARK: - Observable state
 
     @Published private(set) var totalFiles: Int = 0
@@ -96,6 +105,72 @@ final class IngestService: ObservableObject {
                         // Dry-run: count without DB writes so the
                         // preview still reflects what a real run
                         // would insert.
+                        inserted += 1
+                    }
+                }
+                processed += 1
+
+                if let dbWriter,
+                   pendingBatch.count >= Self.insertBatchSize {
+                    await flushPendingBatch(&pendingBatch, into: dbWriter)
+                }
+            }
+
+            if let dbWriter, !pendingBatch.isEmpty {
+                await flushPendingBatch(&pendingBatch, into: dbWriter)
+            }
+
+            statusMessage = dryRun
+                ? "dry-run done — \(inserted) of \(files.count) eligible"
+                : "ingest done — \(inserted) of \(files.count) written"
+        } catch is CancellationError {
+            statusMessage = "cancelled"
+        } catch {
+            lastError = (error as? LocalizedError)?.errorDescription
+                ?? String(describing: error)
+            statusMessage = "failed: \(lastError ?? "?")"
+        }
+
+        isRunning = false
+    }
+
+    /// Ingest an explicit list of file URLs rather than walking a
+    /// folder. Used by the weather-filtered ingest where the file
+    /// set is the result of a Supabase `cloudwatcher_readings` query
+    /// (e.g. "every clear-enough-but-not-fully-clear frame"). Still
+    /// runs the same weather + meteoblue + ephemeris enrichment path
+    /// as folder ingest so downstream code sees identical rows.
+    func ingestFiles(
+        _ files: [URL],
+        cameraType: CameraType,
+        dryRun: Bool
+    ) async {
+        guard !isRunning else { return }
+        resetCounters()
+        isRunning = true
+        lastError = nil
+        cancelToken = CancelToken()
+        let token = cancelToken
+
+        statusMessage = "processing \(files.count) files…"
+
+        do {
+            totalFiles = files.count
+            try await buildWeatherIndex(forFiles: files)
+            let dbWriter: DatabaseWriter? =
+                dryRun ? nil : Database.shared.writer
+
+            var pendingBatch: [ImageRecord] = []
+            pendingBatch.reserveCapacity(Self.insertBatchSize)
+
+            for file in files {
+                try token.checkCancelled()
+                if let record = await processFile(
+                    file, cameraType: cameraType
+                ) {
+                    if dbWriter != nil {
+                        pendingBatch.append(record)
+                    } else {
                         inserted += 1
                     }
                 }

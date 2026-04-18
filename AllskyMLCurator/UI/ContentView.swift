@@ -42,6 +42,7 @@ struct ContentView: View {
         }
     }
     @State private var showIngestSheet: Bool = false
+    @State private var showWeatherIngestSheet: Bool = false
     @State private var showInfoPanel: Bool = true
     @State private var isLoading: Bool = false
     @State private var nightMode: Bool = AppSettings.shared.nightMode
@@ -136,6 +137,16 @@ struct ContentView: View {
         }) {
             IngestSheet(isPresented: $showIngestSheet)
         }
+        .sheet(isPresented: $showWeatherIngestSheet, onDismiss: {
+            Task { await reload() }
+        }) {
+            WeatherIngestSheet(isPresented: $showWeatherIngestSheet)
+        }
+        .background(
+            Button("") { showWeatherIngestSheet = true }
+                .keyboardShortcut("i", modifiers: [.command, .shift])
+                .opacity(0)
+        )
         .onReceive(NotificationCenter.default.publisher(
             for: .openAllskyFolderRequested
         )) { _ in
@@ -184,13 +195,20 @@ struct ContentView: View {
 
             Divider().frame(height: 42)
 
-            Button {
-                showIngestSheet = true
+            Menu {
+                Button("From folder… (⌘O)") {
+                    showIngestSheet = true
+                }
+                Button("Weather-filtered (⌘⇧I)") {
+                    showWeatherIngestSheet = true
+                }
             } label: {
                 Label("Ingest…", systemImage: "tray.and.arrow.down")
                     .font(.body.weight(.medium))
             }
+            .menuStyle(.borderedButton)
             .controlSize(.large)
+            .frame(width: 130)
             .keyboardShortcut("o", modifiers: .command)
 
             Divider().frame(height: 42)
