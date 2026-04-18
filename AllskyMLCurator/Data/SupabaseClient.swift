@@ -198,6 +198,13 @@ final class SupabaseClient {
     /// Payload for a single row upserted into `ml_training_samples`.
     /// Matches the migration's column set exactly; the server-side
     /// `UNIQUE (image_path)` constraint drives the upsert semantics.
+    ///
+    /// `encode(to:)` is explicit and emits every key, even when the
+    /// value is nil (→ JSON `null`). Swift's synthesized `Encodable`
+    /// otherwise omits nil-valued optional properties, which makes a
+    /// bulk insert fail with PGRST102 "All object keys must match"
+    /// the moment one row populates `cloudwatcher_reading_id` and
+    /// another doesn't.
     struct TrainingSampleDTO: Encodable, Sendable {
         let image_path: String
         let image_hash_sha256: String?
@@ -221,6 +228,45 @@ final class SupabaseClient {
         let confidence: Int?
         let annotator_id: String?
         let labeled_at: String             // ISO-8601 UTC
+
+        enum CodingKeys: String, CodingKey {
+            case image_path, image_hash_sha256, camera_source, capture_utc
+            case cloudwatcher_reading_id, meteoblue_hour_id
+            case sun_alt_deg, sun_az_deg
+            case moon_alt_deg, moon_az_deg, moon_phase
+            case reflection_risk_score
+            case `class`
+            case reflection_flag, transitional_flag
+            case camera_profile_id, time_of_day
+            case source, sample_weight, confidence
+            case annotator_id, labeled_at
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(image_path,              forKey: .image_path)
+            try c.encode(image_hash_sha256,       forKey: .image_hash_sha256)
+            try c.encode(camera_source,           forKey: .camera_source)
+            try c.encode(capture_utc,             forKey: .capture_utc)
+            try c.encode(cloudwatcher_reading_id, forKey: .cloudwatcher_reading_id)
+            try c.encode(meteoblue_hour_id,       forKey: .meteoblue_hour_id)
+            try c.encode(sun_alt_deg,             forKey: .sun_alt_deg)
+            try c.encode(sun_az_deg,              forKey: .sun_az_deg)
+            try c.encode(moon_alt_deg,            forKey: .moon_alt_deg)
+            try c.encode(moon_az_deg,             forKey: .moon_az_deg)
+            try c.encode(moon_phase,              forKey: .moon_phase)
+            try c.encode(reflection_risk_score,   forKey: .reflection_risk_score)
+            try c.encode(self.class,              forKey: .class)
+            try c.encode(reflection_flag,         forKey: .reflection_flag)
+            try c.encode(transitional_flag,       forKey: .transitional_flag)
+            try c.encode(camera_profile_id,       forKey: .camera_profile_id)
+            try c.encode(time_of_day,             forKey: .time_of_day)
+            try c.encode(source,                  forKey: .source)
+            try c.encode(sample_weight,           forKey: .sample_weight)
+            try c.encode(confidence,              forKey: .confidence)
+            try c.encode(annotator_id,            forKey: .annotator_id)
+            try c.encode(labeled_at,              forKey: .labeled_at)
+        }
     }
 
     /// Upsert a batch of training-sample rows. PostgREST only treats a
