@@ -27,6 +27,15 @@ struct PreferencesView: View {
     @State private var monoFov:      Double = AppSettings.shared.monoFovDeg
     @State private var horizonExclusion: Double = AppSettings.shared.horizonExclusionDeg
 
+    // MARK: - Training tab state
+
+    @State private var trainingLR: Double       = AppSettings.shared.trainingLearningRate
+    @State private var trainingIterations: Int  = AppSettings.shared.trainingIterations
+    @State private var trainingL2: Double       = AppSettings.shared.trainingL2
+    @State private var clearBoost: Double       = AppSettings.shared.clearClassBoost
+    @State private var autoThreshold: Double    = AppSettings.shared.autonomousConfidenceThreshold
+    @State private var autoMinLabels: Int       = AppSettings.shared.autonomousMinLabels
+
     // MARK: - Advanced tab state
 
     @State private var purgeConfirmScope: PurgeService.Scope?
@@ -46,6 +55,8 @@ struct PreferencesView: View {
                 .tabItem { Label("Observatory", systemImage: "location") }
             cameraTab
                 .tabItem { Label("Camera", systemImage: "camera") }
+            trainingTab
+                .tabItem { Label("Training", systemImage: "brain.head.profile") }
             supabaseTab
                 .tabItem { Label("Supabase", systemImage: "externaldrive.connected.to.line.below") }
             advancedTab
@@ -213,6 +224,152 @@ struct PreferencesView: View {
             Int(monoFrac * 100), monoConeDeg
         )
         return colorLine + "\n" + monoLine
+    }
+
+    // MARK: - Training tab
+
+    /// Hyperparameter knobs for the logistic-regression head and the
+    /// autonomous auto-rater. All values take effect on the *next*
+    /// train / auto-rate pass — no restart needed. Sliders are ranged
+    /// around defaults known to converge on the Rheine data; values
+    /// outside these ranges rarely help and make debugging harder.
+    private var trainingTab: some View {
+        Form {
+            Section("Logistic-regression head") {
+                sliderRow(
+                    label: "Learning rate",
+                    value: $trainingLR,
+                    range: 0.005...0.2,
+                    step: 0.005,
+                    displayFormat: "%.3f"
+                ) { new in AppSettings.shared.trainingLearningRate = new }
+
+                integerSliderRow(
+                    label: "Iterations",
+                    value: $trainingIterations,
+                    range: 50...500,
+                    step: 10
+                ) { new in AppSettings.shared.trainingIterations = new }
+
+                sliderRow(
+                    label: "L2 regularisation",
+                    value: $trainingL2,
+                    range: 0...0.01,
+                    step: 0.0001,
+                    displayFormat: "%.4f"
+                ) { new in AppSettings.shared.trainingL2 = new }
+
+                sliderRow(
+                    label: "Clear-sky class boost",
+                    value: $clearBoost,
+                    range: 1.0...5.0,
+                    step: 0.1,
+                    displayFormat: "%.1f×"
+                ) { new in AppSettings.shared.clearClassBoost = new }
+            }
+
+            Section("Autonomous auto-rate (⌘⇧A)") {
+                sliderRow(
+                    label: "Confidence threshold",
+                    value: $autoThreshold,
+                    range: 0.3...0.95,
+                    step: 0.01,
+                    displayFormat: "%.0f %%",
+                    displayScale: 100
+                ) { new in AppSettings.shared.autonomousConfidenceThreshold = new }
+
+                integerSliderRow(
+                    label: "Min human labels",
+                    value: $autoMinLabels,
+                    range: 50...1000,
+                    step: 10
+                ) { new in AppSettings.shared.autonomousMinLabels = new }
+            }
+
+            Section {
+                HStack {
+                    Button("Reset training defaults") {
+                        AppSettings.shared.resetTrainingHyperparameters()
+                        trainingLR         = AppSettings.shared.trainingLearningRate
+                        trainingIterations = AppSettings.shared.trainingIterations
+                        trainingL2         = AppSettings.shared.trainingL2
+                        clearBoost         = AppSettings.shared.clearClassBoost
+                        autoThreshold      = AppSettings.shared.autonomousConfidenceThreshold
+                        autoMinLabels      = AppSettings.shared.autonomousMinLabels
+                    }
+                    Spacer()
+                }
+            }
+
+            Section {
+                Text("Changes take effect on the next ⌘T (train) and ⌘⇧A (auto-rate). Higher learning rate + fewer iterations trains faster but may oscillate around the minimum; lower rate + more iterations converges more smoothly. L2 > 0 stabilises tiny training sets but blunts the model as data grows. The clear-sky boost counters Rheine's cloud-dominant distribution — lower it when the confusion matrix shows class 5 being over-predicted. Raise the auto-rate threshold for more human oversight, lower it for more autonomy.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    /// Slider row that commits to `AppSettings` on every change. The
+    /// display format runs against `value * displayScale` so the same
+    /// row can render a 0…1 probability as a 0…100 percentage without
+    /// duplicating the binding.
+    private func sliderRow(
+        label: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        step: Double,
+        displayFormat: String,
+        displayScale: Double = 1.0,
+        onCommit: @escaping (Double) -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(label)
+                Spacer()
+                Text(String(format: displayFormat, value.wrappedValue * displayScale))
+                    .font(.body.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Slider(value: value, in: range, step: step)
+                .onChange(of: value.wrappedValue) { _, new in
+                    onCommit(new)
+                }
+        }
+    }
+
+    /// Integer variant — SwiftUI's `Slider` is double-backed, so the
+    /// binding round-trips through a Double behind the scenes while
+    /// the display stays integer.
+    private func integerSliderRow(
+        label: String,
+        value: Binding<Int>,
+        range: ClosedRange<Int>,
+        step: Int,
+        onCommit: @escaping (Int) -> Void
+    ) -> some View {
+        let doubleBinding = Binding<Double>(
+            get: { Double(value.wrappedValue) },
+            set: { value.wrappedValue = Int($0) }
+        )
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(label)
+                Spacer()
+                Text("\(value.wrappedValue)")
+                    .font(.body.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Slider(
+                value: doubleBinding,
+                in: Double(range.lowerBound)...Double(range.upperBound),
+                step: Double(step)
+            )
+            .onChange(of: value.wrappedValue) { _, new in
+                onCommit(new)
+            }
+        }
     }
 
     // MARK: - Advanced tab
