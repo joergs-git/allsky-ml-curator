@@ -633,16 +633,28 @@ struct ContentView: View {
     /// channel — it just keeps work flowing while the user rates.
     private func warmRatedEmbeddings() async {
         let rated = await ImageLibrary.shared.fetchRatedImages()
-        for image in rated {
-            if Task.isCancelled { return }
-            if EmbeddingPipeline.shared.cached(for: image.filePath) != nil {
-                continue
+
+        // The for-loop body runs on MainActor by default (ContentView
+        // is a SwiftUI view). Push the whole walk onto the cooperative
+        // pool: the previous main-actor version decoded every rated
+        // sidecar's 768 floats up front via `cached(...)` to check for
+        // existence, which at ~5000 rated frames stalled the main
+        // thread for ~5 s at launch — no tiles could render in that
+        // window. `sidecarExists` is a one-stat check; the detached
+        // task wrapping ensures the rest of the loop never touches
+        // MainActor either.
+        await Task.detached(priority: .utility) {
+            for image in rated {
+                if Task.isCancelled { return }
+                if EmbeddingPipeline.shared.sidecarExists(for: image.filePath) {
+                    continue
+                }
+                _ = await EmbeddingPipeline.shared.generate(
+                    for: image.filePath,
+                    cameraType: image.cameraSource.cameraType
+                )
             }
-            _ = await EmbeddingPipeline.shared.generate(
-                for: image.filePath,
-                cameraType: image.cameraSource.cameraType
-            )
-        }
+        }.value
     }
 }
 

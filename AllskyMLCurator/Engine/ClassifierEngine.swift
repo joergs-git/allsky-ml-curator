@@ -815,25 +815,41 @@ final class ClassifierEngine: ObservableObject {
     /// Re-score every image the library currently holds after a
     /// training run. Called automatically from `train()`.
     private func recomputeAllPredictions() async {
-        let reader = Database.shared.reader
-        let images = (try? await reader.read { db in
-            try ImageRecord.fetchAll(db)
-        }) ?? []
+        // Snapshot the current weights so the detached work doesn't
+        // need MainActor access for them. `self` stays isolated; the
+        // per-image sidecar decode + sgemv happen on the cooperative
+        // pool.
+        let weightsSnapshot = weights
+        let biasSnapshot = bias
+        let dim = featureDim
+        let numClasses = self.numClasses
 
-        var next: [Int64: Prediction] = [:]
-        for image in images {
-            guard let id = image.id,
-                  let vector = FeatureVectorBuilder.vector(for: image),
-                  vector.count == featureDim else { continue }
-            if let prediction = Self.runPrediction(
-                vector: vector,
-                weights: weights,
-                bias: bias,
-                numClasses: numClasses
-            ) {
-                next[id] = prediction
+        let next = await Task.detached(priority: .utility) {
+            () -> [Int64: Prediction] in
+            let reader = Database.shared.reader
+            let images = (try? reader.read { db in
+                try ImageRecord.fetchAll(db)
+            }) ?? []
+
+            var next: [Int64: Prediction] = [:]
+            for image in images {
+                if Task.isCancelled { return next }
+                guard let id = image.id,
+                      let vector = FeatureVectorBuilder.vector(for: image),
+                      vector.count == dim
+                else { continue }
+                if let prediction = Self.runPrediction(
+                    vector: vector,
+                    weights: weightsSnapshot,
+                    bias: biasSnapshot,
+                    numClasses: numClasses
+                ) {
+                    next[id] = prediction
+                }
             }
-        }
+            return next
+        }.value
+
         predictions = next
     }
 
@@ -924,7 +940,10 @@ final class ClassifierEngine: ObservableObject {
 
     // MARK: - Static per-sample prediction
 
-    private static func runPrediction(
+    /// Pure, actor-free per-sample softmax + argmax. Runs on whichever
+    /// executor called it — including a `Task.detached` from the
+    /// batch re-score path.
+    nonisolated private static func runPrediction(
         vector: [Float],
         weights: [Float],
         bias: [Float],
