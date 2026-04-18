@@ -1,7 +1,7 @@
 # Allsky-ML-Curator — Claude Code Master Document
 
 > Native macOS (Apple Silicon, Metal-accelerated) image curator with on-device ML.
-> **Version:** 0.1.0 — scaffolding phase, v1.0 MVP not yet started.
+> **Version:** 0.3.0 — v1 MVP workflow is usable end-to-end (rate → classifier retrains → autonomous streaming auto-rate → inspection view with cloud motion).
 
 ---
 
@@ -17,10 +17,10 @@
 
 ## Project summary
 
-A keyboard-first macOS tool for rating allsky 360° sky imagery with live-learning ML assistance. A curator blasts through hundreds of frames per session — each rated 0 (unrated) / 1 (full clouds) / 2 (mostly) / 3 (some clouds) / 4 (thin haze or dust) / 5 (clear), with orthogonal flags `R` (reflection visible) and `T` (transitional / gain-settling frame). A BNNS-backed logistic-regression classifier retrains after every commit on top of frozen Apple Vision feature-print embeddings, so the next matrix page arrives with prediction overlays the curator can confirm (`A`) or correct.
+A keyboard-first macOS tool for rating allsky 360° sky imagery with live-learning ML assistance. A curator blasts through hundreds of frames per session — each rated 0 (unrated) / 1 (full clouds) / 2 (mostly) / 3 (some clouds) / 4 (little / thin) / 5 (clear), with orthogonal flags `R` (reflection visible) and `T` (transitional / gain-settling frame). A BNNS-backed logistic-regression classifier retrains after every commit on top of frozen Apple Vision feature-print embeddings, so the next matrix page arrives with prediction overlays the curator can confirm or override. An autonomous auto-rate mode (⌘⇧A) can stream high-confidence predictions into unrated tiles.
 
 The labeled dataset has three downstream consumers:
-1. Dynamic seasonal threshold tuning of the AAG CloudWatcher Solo clear/cloudy sky-temperature boundary (the primary "real" goal).
+1. Dynamic seasonal threshold tuning of the AAG CloudWatcher Solo clear/cloudy sky-temperature boundary (the primary "real" goal — deferred, not active work).
 2. Weather-aware frame quality ranking in the sibling app `AstroTriage-blinkV2`.
 3. A portable cloud/reflection classifier usable at other allsky sites.
 
@@ -30,13 +30,14 @@ The labeled dataset has three downstream consumers:
 
 | Layer | Technology | Rationale |
 |---|---|---|
-| UI | SwiftUI + AppKit hybrid | NSCollectionView for 36+ tile matrix, NSEvent for fast keyboard |
-| Rendering | Metal compute kernels | Ported from `AstroTriage-blinkV2` Shaders.metal |
+| UI | SwiftUI + AppKit hybrid | LazyVGrid matrix, `.onKeyPress` for fast keyboard, NSEvent for modifier flags during clicks |
+| Rendering | CoreGraphics + ImageIO + Metal | CGImageSource thumbnail fast-path; Metal kernel reserved for later GPU passes |
 | ML embedding | Apple Vision `VNGenerateImageFeaturePrintRequest` | 768-dim, ANE-accelerated, OS-bundled |
-| Classifier | Accelerate / BNNS logistic regression | In-memory refit < 200 ms per commit |
+| Classifier | Accelerate / BNNS logistic regression | Softmax-cross-entropy GD, in-memory refit < 200 ms per commit, 5-fold CV + per-class P/R/F1 |
+| Cloud motion | Vision `VNTranslationalImageRegistrationRequest` | Per-frame, between same-camera neighbours, equidistant fisheye scaling |
 | Local DB | SQLite via GRDB.swift 7.x | Labels, images, predictions, model versions |
 | Remote DB | Supabase REST (URLSession) | **Extends the existing `astro-weather` project** |
-| Astronomy | Pure-Swift VSOP87-lite | Sun / moon ephemeris |
+| Astronomy | Pure-Swift Schlyter / Meeus | Sun / moon ephemeris |
 | File access | SMB mount `/Volumes/AllSky-Rheine/...` | Paths rewritten from `cloudwatcher_readings.allsky_url` |
 | Minimum macOS | 14 Sonoma | Apple Silicon only |
 | Build system | Xcode 16 + XcodeGen `project.yml` | Matches the sibling `AstroTriage-blinkV2` |
@@ -45,29 +46,50 @@ The labeled dataset has three downstream consumers:
 
 ## Architectural rules (load-bearing — do not deviate without asking)
 
-1. **Two cameras, never mixed without a one-hot indicator.** `camera_source` is `color_allsky_jpg` / `mono_zwo_jpg` / `mono_zwo_fits`. The mono camera has no usable daylight mode: any mono frame at `sun_alt > −6°` is flagged `is_excluded=1` on ingest and never enters the training set. The classifier's aux-feature vector carries a camera one-hot so the shared head can specialize.
-2. **JPG overlay text must be masked before ML embedding.** `SkyDiskMask` crops the fisheye circle and neutralizes known overlay-text rectangles (defined per camera in `Preferences/CameraProfiles/*.json`). The UI still shows the original thumbnail with overlay intact — only the `.featureprint` pipeline sees the masked version.
-3. **Reflection (`R`) is an orthogonal tag, not a 7th class.** `labels.class` (0-5) and `labels.reflection_flag` (0/1) coexist. Moon-reflex on a "3 some clouds" is stored as both.
-4. **Transitional (`T`) is also orthogonal.** Gain-settling dusk/dawn frames get `transitional_flag=1` either by detector or by user. They stay in the DB but carry `sample_weight=0.5` and don't count toward class recall.
-5. **No manual quadrant / directional tagging.** v1 is full-disk only. v2.0 derives cloud motion automatically via optical flow + per-camera N/S/E/W preset.
+1. **Two cameras, never mixed without a one-hot indicator.** `camera_source` is `color_allsky_jpg` / `mono_allsky_jpg` / `mono_allsky_fits`. The mono camera has no usable daylight mode: any mono frame at `sun_alt > −6°` is flagged `is_excluded=1` on ingest and never enters the training set. The classifier's aux-feature vector carries a camera one-hot so the shared head can specialize.
+2. **JPG overlay is shown in the UI but masked before ML embedding.** `SkyDiskMask` crops the fisheye circle and neutralizes known overlay-text rectangles (per-camera geometry in Preferences → Camera). The UI keeps the original image; only the `.featureprint` pipeline sees the masked version. The inspection view also shows the original so the curator sees every detail.
+3. **Zenith-cone rating, not full hemisphere.** Horizon-exclusion slider + per-camera FoV computes a symmetric crop applied identically to thumbnail and embedding. Rater and model see the same signal.
+4. **Reflection (`R`) and transitional (`T`) are orthogonal flags.** `labels.class` (0-5) coexists with `reflection_flag` + `transitional_flag`. Transitional labels carry `sample_weight=0.5` and don't count toward class recall.
+5. **No manual quadrant / directional tagging.** v1 is full-disk only. Cloud motion is derived automatically via Vision translational registration + per-camera north-offset calibration.
 6. **Extend the astro-weather Supabase project — never spin up a new one.** All new tables (`ml_training_samples`, `ml_predictions`, `ml_model_metadata`) live alongside `cloudwatcher_readings` so joins stay trivial.
-7. **Class-5 (clear) gets a 3× boost on top of inverse-frequency weighting.** Rheine nights are dominantly cloudy; without the boost, rare clear samples are statistically invisible.
-8. **Autonomous mode must bound confirmation bias.** Auto-labeled rows have `source='auto'` (provisional, not used in retrain) or `source='auto_confirmed'` (weighted 0.3× vs. human). Autonomous mode is disabled until ≥200 human labels exist.
+7. **Class-5 (clear) gets a 3× boost on top of inverse-frequency weighting.** Rheine nights are dominantly cloudy; without the boost, rare clear samples are statistically invisible. Boost is live-tunable in Preferences → Training.
+8. **Autonomous mode bounds confirmation bias.** Auto-labeled rows have `source='auto'` (provisional, excluded from retrain) or `source='auto_confirmed'` (weighted 0.3×). Autonomous mode is gated behind a minimum human-label count (default 200), live-tunable in Preferences → Training.
+9. **Classical Finder / Excel selection semantics.** Plain arrow keys collapse selection to the cursor and move the anchor. Shift+arrow extends from the anchor (stable). Shift+Up/Down/PageUp/PageDown/Home/End fill full rows; Shift+Left/Right mutates the selection by exactly one tile.
+10. **Classifier weights blob is version-tagged by featureDim.** `ClassifierEngine.encodeWeights` emits a CMLW v1 header with featureDim; `decodeWeights` returns nil on mismatch; `restoreLatestModel()` falls back to "untrained" silently so growing the aux vector doesn't crash a restore.
 
 ---
 
-## Reuse from AstroTriage-blinkV2
+## Keyboard map (current)
 
-Port these files (verbatim where possible, adapt imports / module names):
+| Key(s) | Surface | Action |
+|---|---|---|
+| `0`-`5` | Matrix / Inspection | Apply class rating (0 = unrated) |
+| `R` | Matrix / Inspection | Toggle reflection flag |
+| `T` | Matrix / Inspection | Toggle transitional flag |
+| `Q` | Matrix / Inspection | Arm "quick" (confidence=1) for next digit |
+| `C` | Matrix / Inspection | Arm "certain" (confidence=3) for next digit |
+| `Esc` | Matrix | Cancel armed confidence |
+| `Esc` | Inspection | Close sheet |
+| Arrows | Matrix | Move cursor, collapse selection to a single tile, anchor follows |
+| `Shift` + arrows | Matrix | Extend from anchor; Left/Right = single cell, Up/Down/PageUp/PageDown/Home/End = row-aligned strip |
+| `⌘A` | Matrix | Select all |
+| Enter | Matrix | Open inspection view |
+| Enter / `Esc` | Inspection | Close back to matrix |
+| `⌘⇧A` | Global | Toggle autonomous streaming auto-rate; press again to stop |
+| `⌘T` | Global | Retrain classifier (reads live hyperparameters from AppSettings) |
+| `⌘O` | Global | Open ingest sheet |
+| `⌘S` | Global | Manual Supabase sync push |
+| `⌘,` | Global | Preferences |
 
-- `Metal/MetalRenderer.swift` + `Metal/Shaders.metal` + `Metal/TexturePool.swift` — GPU pipeline
-- `UI/KeyboardHandler.swift` — NSEvent local monitor pattern
-- `UI/AppColors.swift` — night-mode red-on-black + tier colors
-- `Engine/PrefetchCache.swift` — dual-queue thumbnail prefetch
-- `Engine/TargetCatalogService.swift` — Supabase REST + disk TTL cache pattern
-- `Bridge/ImageDecoder*` — FITS/XISF decoding (**v1.1 only, skip for MVP**)
+---
 
-**Do not reuse** `MosaicGenerator.swift` — that produces a monolithic VLM JPEG. The curator's matrix is a live, navigable NSCollectionView, not a baked mosaic.
+## Feature tabs in Preferences
+
+- **Observatory** — lat/lon (default Rheine 52.17°N / 7.25°E).
+- **Camera** — per-camera fisheye geometry, FoV, horizon exclusion, north offset (compass calibration for cloud motion).
+- **Training** — learning rate, iterations, L2, clear-class boost, autonomous confidence threshold, autonomous min-labels gate, reset-to-defaults.
+- **Supabase** — URL + anon key (UserDefaults-backed, env overrides via `SUPABASE_URL` / `SUPABASE_ANON_KEY`).
+- **Advanced** — resend-all-ratings and six purge scopes (ratings, classifier model, embeddings, thumbnails, images + caches, everything).
 
 ---
 
@@ -82,16 +104,37 @@ Port these files (verbatim where possible, adapt imports / module names):
 
 ---
 
-## Publish workflow (every release)
+## Release workflow
 
-After every feature commit + push:
+Use the helper script — wraps the full pipeline from the global policy:
 
-1. `xcodegen generate` if `project.yml` changed
-2. Archive in Xcode (⌘B → Product → Archive, or `xcodebuild archive`)
-3. Distribute via Xcode Organizer → Developer ID with Apple ID `joergklaas@mac.com`
-4. `xcrun notarytool submit` on the signed zip; wait for green
-5. Staple (`xcrun stapler staple`)
-6. Upload the notarized zip to the GitHub Releases tab
+```bash
+./scripts/release.sh                  # full: archive → export → notarise → staple → gh release
+./scripts/release.sh --skip-notarize  # locally signed, no Apple round-trip
+./scripts/release.sh --skip-gh        # skip the GitHub release create step
+```
+
+One-time bootstrap on a fresh machine:
+
+```bash
+brew install xcodegen
+xcrun notarytool store-credentials "allskymlcurator-notary" \
+  --apple-id "joergklaas@mac.com" \
+  --team-id "<YOUR_TEAM_ID>" \
+  --password "<app-specific-password>"
+```
+
+The script reads `MARKETING_VERSION` from `project.yml` for the tag + filename. Bump that single value before running.
+
+---
+
+## Scope decisions (do not re-open without explicit user ask)
+
+- **FITS v1.1 support** — dropped 2026-04-18. JPG path covers the active workflow.
+- **Obstruction-mask editor** — dropped 2026-04-18. Dynamic zenith crop handles the "what to ignore" problem.
+- **Manual cardinal-quadrant cloud annotation** — rejected from day one; replaced by automatic cloud motion detection (shipped v0.3.0).
+- **Multi-site support** — deferred. `camera_profile_id` hash already differentiates rigs, so existing data stays portable; build the schema / picker when a second observatory is actually coming online.
+- **CloudWatcher Solo threshold feedback job** — deferred. User wants this eventually but not in the current wave.
 
 ---
 

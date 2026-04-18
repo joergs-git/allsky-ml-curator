@@ -82,8 +82,6 @@ Roadmap: multi-site support + CloudWatcher Solo threshold feedback job (v2.x str
 
 ## Getting started (developer)
 
-> This project is currently in scaffolding — the Xcode project is not yet generated. These are the steps to bootstrap a dev environment.
-
 ### 1. Prerequisites
 
 - macOS 14.0 Sonoma or later
