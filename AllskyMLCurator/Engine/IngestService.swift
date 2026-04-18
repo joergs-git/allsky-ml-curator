@@ -103,23 +103,49 @@ final class IngestService: ObservableObject {
         "jpg", "jpeg", "fit", "fits"
     ]
 
+    /// Directory names whose entire subtrees are skipped during the
+    /// image scan. The user's allsky layout puts derived products
+    /// (keograms, keogram-rt, star-trail composites) in sibling folders
+    /// that we never want to train on, and per-frame metadata JSONs
+    /// live in `meta/` which we access via a direct sidecar lookup
+    /// rather than a recursive walk.
+    private static func shouldSkipDirectory(_ name: String) -> Bool {
+        let lower = name.lowercased()
+        return lower.hasPrefix("keogram")
+            || lower == "startrail"
+            || lower == "meta"
+    }
+
     /// Walk `folderURL` recursively and return every supported image
     /// file, sorted by path so the UI counter advances in a stable
-    /// order.
+    /// order. Directory subtrees that match `shouldSkipDirectory` are
+    /// pruned entirely via `enumerator.skipDescendants()`.
     private func scanFolder(_ folderURL: URL) -> [URL] {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(
             at: folderURL,
-            includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
+            includingPropertiesForKeys: [
+                .isRegularFileKey, .isDirectoryKey, .contentModificationDateKey
+            ],
             options: [.skipsHiddenFiles]
         ) else { return [] }
 
         var results: [URL] = []
         for case let url as URL in enumerator {
+            let values = try? url.resourceValues(
+                forKeys: [.isRegularFileKey, .isDirectoryKey]
+            )
+
+            // Prune derived-product and metadata subdirectories.
+            if values?.isDirectory == true,
+               Self.shouldSkipDirectory(url.lastPathComponent) {
+                enumerator.skipDescendants()
+                continue
+            }
+
+            guard values?.isRegularFile == true else { continue }
             let ext = url.pathExtension.lowercased()
             guard Self.supportedExtensions.contains(ext) else { continue }
-            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
-            else { continue }
             results.append(url)
         }
         return results.sorted { $0.path < $1.path }
