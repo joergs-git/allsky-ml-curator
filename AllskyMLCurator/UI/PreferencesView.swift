@@ -1,19 +1,26 @@
 import SwiftUI
 
-/// Preferences window. Phase-1 scope: observatory location, Synology
-/// mount remap, and the Supabase URL + anon key needed by the ingest
-/// service. Autonomous-mode + ML-tuning controls land in later phases.
+/// Preferences window. Two tabs for now: Observatory location and
+/// Supabase credentials. Further tabs (autonomous-mode tuning,
+/// thumbnail cache limits) join in later phases.
+///
+/// Layout uses `LabeledContent` + `formStyle(.grouped)` so the window
+/// sizes to its content and stays readable at the default macOS
+/// Preferences width. A `minWidth / minHeight` frame keeps the window
+/// resizable but prevents a manual shrink below usable dimensions.
 struct PreferencesView: View {
 
-    @State private var latitude: Double = AppSettings.shared.latitudeDeg
-    @State private var longitude: Double = AppSettings.shared.longitudeDeg
-    @State private var allskyMount: String = AppSettings.shared.allskyMountPath
-    @State private var nasPrefix: String = AppSettings.shared.nasPathPrefix
+    // MARK: - Observatory state
 
-    @State private var supabaseUrl: String = ""
-    @State private var supabaseAnonKey: String = ""
-    @State private var supabaseStatus: String = ""
-    @State private var supabaseTesting: Bool = false
+    @State private var latitude: Double  = AppSettings.shared.latitudeDeg
+    @State private var longitude: Double = AppSettings.shared.longitudeDeg
+
+    // MARK: - Supabase state
+
+    @State private var supabaseUrl: String      = ""
+    @State private var supabaseAnonKey: String  = ""
+    @State private var supabaseStatus: String   = ""
+    @State private var supabaseTesting: Bool    = false
 
     var body: some View {
         TabView {
@@ -22,7 +29,7 @@ struct PreferencesView: View {
             supabaseTab
                 .tabItem { Label("Supabase", systemImage: "externaldrive.connected.to.line.below") }
         }
-        .frame(width: 560, height: 360)
+        .frame(minWidth: 620, minHeight: 420)
         .onAppear(perform: loadSupabaseConfig)
     }
 
@@ -31,67 +38,58 @@ struct PreferencesView: View {
     private var observatoryTab: some View {
         Form {
             Section("Location") {
-                HStack {
-                    Text("Latitude (°N)")
-                    Spacer()
+                LabeledContent("Latitude (°N)") {
                     TextField("52.17", value: $latitude, format: .number)
-                        .frame(width: 120)
-                        .onSubmit { AppSettings.shared.latitudeDeg = latitude }
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 140)
+                        .onChange(of: latitude) { _, newValue in
+                            AppSettings.shared.latitudeDeg = newValue
+                        }
                 }
-                HStack {
-                    Text("Longitude (°E)")
-                    Spacer()
+                LabeledContent("Longitude (°E)") {
                     TextField("7.25", value: $longitude, format: .number)
-                        .frame(width: 120)
-                        .onSubmit { AppSettings.shared.longitudeDeg = longitude }
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 140)
+                        .onChange(of: longitude) { _, newValue in
+                            AppSettings.shared.longitudeDeg = newValue
+                        }
                 }
             }
-
-            Section("Synology mount") {
-                HStack {
-                    Text("Mount path")
-                    Spacer()
-                    TextField("/Volumes/AllSky-Rheine", text: $allskyMount)
-                        .frame(width: 280)
-                        .onSubmit { AppSettings.shared.allskyMountPath = allskyMount }
-                }
-                HStack {
-                    Text("NAS path prefix")
-                    Spacer()
-                    TextField("/volume1/AllSky-Rheine", text: $nasPrefix)
-                        .frame(width: 280)
-                        .onSubmit { AppSettings.shared.nasPathPrefix = nasPrefix }
-                }
+            Section {
+                Text("Latitude / longitude are used to compute sun and moon ephemeris for every ingested frame. Default is the Rheine observatory.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
-        .padding()
+        .formStyle(.grouped)
     }
 
     // MARK: - Supabase tab
 
     private var supabaseTab: some View {
         Form {
-            Section("Project") {
-                HStack {
-                    Text("URL")
-                    Spacer()
+            Section("astro-weather project") {
+                LabeledContent("URL") {
                     TextField("https://PROJECT_REF.supabase.co", text: $supabaseUrl)
-                        .frame(width: 340)
+                        .textFieldStyle(.roundedBorder)
                         .textContentType(.URL)
                 }
-                HStack(alignment: .top) {
-                    Text("Anon key")
-                    Spacer()
+                LabeledContent("Anon key") {
                     SecureField("paste the anon key", text: $supabaseAnonKey)
-                        .frame(width: 340)
+                        .textFieldStyle(.roundedBorder)
                 }
             }
+
             Section {
-                HStack {
-                    Button("Test connection") { Task { await testConnection() } }
-                        .disabled(supabaseTesting || supabaseUrl.isEmpty || supabaseAnonKey.isEmpty)
+                HStack(spacing: 8) {
                     Button("Save") { saveSupabaseConfig() }
                         .keyboardShortcut(.defaultAction)
+                    Button("Test connection") {
+                        Task { await testConnection() }
+                    }
+                    .disabled(supabaseTesting
+                              || supabaseUrl.isEmpty
+                              || supabaseAnonKey.isEmpty)
                     if supabaseTesting {
                         ProgressView().controlSize(.small)
                     }
@@ -101,15 +99,17 @@ struct PreferencesView: View {
                     Text(supabaseStatus)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
                 }
             }
+
             Section {
-                Text("Values are stored in the macOS Keychain, never in UserDefaults or on disk. Environment variables `SUPABASE_URL` / `SUPABASE_ANON_KEY` override Keychain when set in the launch environment.")
+                Text("Values are stored in the macOS Keychain. Environment variables SUPABASE_URL and SUPABASE_ANON_KEY override Keychain when set in the Xcode launch environment.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
-        .padding()
+        .formStyle(.grouped)
     }
 
     // MARK: - Actions
@@ -136,7 +136,6 @@ struct PreferencesView: View {
     private func testConnection() async {
         supabaseTesting = true
         supabaseStatus = "testing…"
-        // Save before testing so the client reads the latest values.
         do {
             try SupabaseClient.shared.saveConfig(
                 urlString: supabaseUrl, anonKey: supabaseAnonKey
