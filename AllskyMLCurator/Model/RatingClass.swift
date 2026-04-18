@@ -22,6 +22,23 @@ enum RatingClass: Int, Codable, CaseIterable, Sendable {
         }
     }
 
+    /// Rule-of-thumb sky-coverage range corresponding to each class.
+    /// Mirrors the standard meteorological okta scheme (0…8 eighths
+    /// of sky covered → METAR categories SKC / FEW / SCT / BKN / OVC),
+    /// rebinned into the curator's 1…5 classes. Shown next to the
+    /// stars in the side panel so the rater can calibrate "what
+    /// counts as class 3" against a fixed number instead of gut feel.
+    var coverageHint: String {
+        switch self {
+        case .unrated:   return ""
+        case .fullCloud: return "90–100 %"   // 8/8 OVC
+        case .mostly:    return "60–90 %"    // 5-7/8 BKN
+        case .some:      return "30–60 %"    // 3-4/8 SCT
+        case .thin:      return "10–30 %"    // 1-2/8 FEW
+        case .clear:     return "0–10 %"     // 0/8 SKC
+        }
+    }
+
     /// Whether this class should receive the extra clear-sky training
     /// weight boost. Rheine nights are dominantly cloudy, so rare clear
     /// samples (4 and 5) carry more training signal per instance.

@@ -2,29 +2,40 @@ import Foundation
 
 /// Builds the input vector the classifier consumes: the 768-dim
 /// Vision feature-print concatenated with a small set of ephemeris /
-/// camera aux features.
+/// camera / prefilter aux features.
 ///
 /// Layout (subject to stability once v1.1 lands more aux fields):
 /// ```
 /// [ 0 … 767]   Vision FeaturePrint embedding
-/// [768]        sun_alt_norm       = sunAltDeg / 90
+/// [768]        sun_alt_norm            = sunAltDeg / 90
 /// [769]        sin(sun_az_rad)
 /// [770]        cos(sun_az_rad)
-/// [771]        moon_alt_norm      = moonAltDeg / 90
+/// [771]        moon_alt_norm           = moonAltDeg / 90
 /// [772]        sin(moon_az_rad)
 /// [773]        cos(moon_az_rad)
-/// [774]        moon_phase         (already 0…1)
-/// [775]        cam_one_hot_color  (0 or 1)
-/// [776]        cam_one_hot_mono   (0 or 1)
+/// [774]        moon_phase              (already 0…1)
+/// [775]        cam_one_hot_color       (0 or 1)
+/// [776]        cam_one_hot_mono        (0 or 1)
+/// [777]        reflection_risk_score   (0…1)
+/// [778]        transitional_risk_score (0…1)
 /// ```
-/// Total: 777 features. Extending later (sky_temp z-score, exposure,
-/// gain, transitional-risk) is additive — the classifier just has to
-/// be retrained with the wider vector.
+/// Total: 779 features.
+///
+/// Why the two risk scores matter: a frame with a strong sun / moon
+/// reflection looks bright and "feature-rich" in image space alone,
+/// which would push the classifier toward a cloudy rating even when
+/// the zenith sky is actually clear. The geometric + exposure-based
+/// risk scores (computed at ingest, living on ImageRecord) tell the
+/// classifier "this visual brightness is artefact, not cloud". Same
+/// for `transitional` — gain-settling frames are noisy inputs the
+/// classifier should discount. Both are available for every frame
+/// regardless of whether the human has rated it, so no asymmetry
+/// between training and inference.
 enum FeatureVectorBuilder {
 
     /// Aux-only slice length. Embedding length is appended on top by
     /// the embedding pipeline and known per revision at runtime.
-    static let auxCount = 9
+    static let auxCount = 11
 
     /// Build the full feature vector for one image. Returns `nil`
     /// when either the cached embedding or the basic ImageRecord
@@ -54,7 +65,9 @@ enum FeatureVectorBuilder {
             Float(cos(moonAzRad)),
             Float(image.moonPhase),
             camOneHot.color,
-            camOneHot.mono
+            camOneHot.mono,
+            Float(image.reflectionRiskScore),
+            Float(image.transitionalRiskScore)
         ]
     }
 
