@@ -661,24 +661,31 @@ struct ContentView: View {
         isLoading = false
     }
 
-    /// Walk every rated image sequentially and call
-    /// `EmbeddingPipeline.generate` for any that don't yet have a
-    /// cached `.fp` sidecar. The pipeline's internal AsyncSemaphore
-    /// still caps concurrency at 3, so this doesn't saturate the SMB
-    /// channel — it just keeps work flowing while the user rates.
+    /// Walk every image (rated first, unrated second) and extract any
+    /// missing embedding sidecar so the classifier can produce a
+    /// prediction for every tile it's asked about. The pipeline's
+    /// internal AsyncSemaphore caps concurrency at 3 so this doesn't
+    /// saturate the SMB channel — work just keeps flowing in the
+    /// background while the user rates.
+    ///
+    /// Why two passes: rated frames feed the training set and get
+    /// priority (nothing else works without them); unrated frames
+    /// feed the *prediction* side — without their embeddings the
+    /// classifier can't brain-badge any unrated tile in the matrix,
+    /// which is exactly the symptom the user hit when >95 % of
+    /// unrated frames had no sidecar and all brain badges were
+    /// silently absent. The unrated phase also pings
+    /// `classifier.refreshPredictions()` every 100 frames so the
+    /// matrix fills in brain badges progressively rather than
+    /// jumping from none to all after the whole pass finishes.
     private func warmRatedEmbeddings() async {
         let rated = await ImageLibrary.shared.fetchRatedImages()
+        let unrated = await ImageLibrary.shared.fetchUnratedImages()
 
-        // The for-loop body runs on MainActor by default (ContentView
-        // is a SwiftUI view). Push the whole walk onto the cooperative
-        // pool: the previous main-actor version decoded every rated
-        // sidecar's 768 floats up front via `cached(...)` to check for
-        // existence, which at ~5000 rated frames stalled the main
-        // thread for ~5 s at launch — no tiles could render in that
-        // window. `sidecarExists` is a one-stat check; the detached
-        // task wrapping ensures the rest of the loop never touches
-        // MainActor either.
         await Task.detached(priority: .utility) {
+            // Rated first — no prediction refresh needed mid-pass,
+            // since predictions for rated frames are never shown
+            // (rated tiles always show stars instead).
             for image in rated {
                 if Task.isCancelled { return }
                 if EmbeddingPipeline.shared.sidecarExists(for: image.filePath) {
@@ -688,6 +695,28 @@ struct ContentView: View {
                     for: image.filePath,
                     cameraType: image.cameraSource.cameraType
                 )
+            }
+
+            // Unrated second — each newly-embedded frame unlocks a
+            // brain badge, so refresh predictions every 100 new
+            // embeddings and at the end.
+            var newlyEmbedded = 0
+            for image in unrated {
+                if Task.isCancelled { return }
+                if EmbeddingPipeline.shared.sidecarExists(for: image.filePath) {
+                    continue
+                }
+                _ = await EmbeddingPipeline.shared.generate(
+                    for: image.filePath,
+                    cameraType: image.cameraSource.cameraType
+                )
+                newlyEmbedded += 1
+                if newlyEmbedded.isMultiple(of: 100) {
+                    await ClassifierEngine.shared.refreshPredictions()
+                }
+            }
+            if newlyEmbedded > 0 {
+                await ClassifierEngine.shared.refreshPredictions()
             }
         }.value
     }

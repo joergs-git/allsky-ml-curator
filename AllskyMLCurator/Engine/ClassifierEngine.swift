@@ -309,6 +309,16 @@ final class ClassifierEngine: ObservableObject {
         )
     }
 
+    /// Re-score every image against the current weights without
+    /// retraining. Called by the embedding warmer after it finishes
+    /// catching up unrated frames so brain badges appear on tiles
+    /// whose sidecar was only just generated. No-op when the
+    /// classifier is empty.
+    func refreshPredictions() async {
+        guard !weights.isEmpty, featureDim > 0 else { return }
+        await recomputeAllPredictions()
+    }
+
     /// Clear in-memory model + predictions. Useful when the user
     /// wants to reset before a fresh train.
     func clear() {

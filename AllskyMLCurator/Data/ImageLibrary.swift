@@ -112,6 +112,33 @@ final class ImageLibrary: ObservableObject {
         }) ?? []
     }
 
+    /// Every non-excluded image that currently has no active
+    /// human label (so no rating at all, or a rating that was
+    /// later demoted to `isCurrent=false`). Drives the unrated
+    /// half of the embedding warmer — without embeddings for
+    /// these frames the classifier has no prediction to show,
+    /// so the matrix shows no brain badges.
+    func fetchUnratedImages() async -> [ImageRecord] {
+        let reader = Database.shared.reader
+        return (try? await reader.read { db in
+            let ratedIds = try LabelRecord
+                .filter(Column("isCurrent") == true)
+                .filter(Column("source") == "human")
+                .filter(Column("ratingClass") != RatingClass.unrated.rawValue)
+                .select(Column("imageId"), as: Int64.self)
+                .fetchAll(db)
+            let ratedSet = Set(ratedIds)
+            let allImages = try ImageRecord
+                .filter(ImageRecord.Columns.isExcluded == false)
+                .order(Column("captureUtc").asc)
+                .fetchAll(db)
+            return allImages.filter { image in
+                guard let id = image.id else { return false }
+                return !ratedSet.contains(id)
+            }
+        }) ?? []
+    }
+
     // MARK: - Rating writes
 
     /// Apply a class rating (0-5) to one or more images. Existing
