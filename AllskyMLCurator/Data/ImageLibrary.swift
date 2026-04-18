@@ -114,11 +114,15 @@ final class ImageLibrary: ObservableObject {
     /// active labels for the same image are demoted to `isCurrent=false`
     /// so the history is preserved without UNIQUE constraint churn.
     /// Reflection / transitional flags on a prior active label are
-    /// carried forward unless `resetFlags` is `true`.
+    /// carried forward unless `resetFlags` is `true`. `confidence` is
+    /// forwarded into `labels.confidence` (1 = quick, 2 = normal,
+    /// 3 = certain) — `nil` leaves the column null, matching the
+    /// default digit-press behaviour.
     func setRating(
         _ ratingClass: RatingClass,
         forImageIds imageIds: [Int64],
-        resetFlags: Bool = false
+        resetFlags: Bool = false,
+        confidence: Int? = nil
     ) async {
         await withDB { db in
             for imageId in imageIds {
@@ -134,7 +138,8 @@ final class ImageLibrary: ObservableObject {
                     imageId: imageId,
                     ratingClass: ratingClass,
                     reflection: resetFlags ? false : (previous?.reflectionFlag ?? false),
-                    transitional: resetFlags ? false : (previous?.transitionalFlag ?? false)
+                    transitional: resetFlags ? false : (previous?.transitionalFlag ?? false),
+                    confidence: confidence
                 )
                 try label.insert(db)
             }

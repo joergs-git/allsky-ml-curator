@@ -527,9 +527,16 @@ struct ContentView: View {
             legendFlagChip(key: "T", color: AppColors.transitionalFlag(nightMode),
                            label: "transitional (dusk / gain-settling garbage)")
 
+            Divider().frame(height: 18)
+
+            legendFlagChip(key: "Q", color: .orange,
+                           label: "prefix: next rating is quick (confidence 1)")
+            legendFlagChip(key: "C", color: .green,
+                           label: "prefix: next rating is certain (confidence 3)")
+
             Spacer()
 
-            Text("arrows / page / home-end nav · shift extends · ⌘A select all")
+            Text("arrows / page / home-end nav · shift extends · ⌘A select all · Enter inspects")
                 .font(.caption)
                 .foregroundStyle(AppColors.fgVeryDim(nightMode))
         }

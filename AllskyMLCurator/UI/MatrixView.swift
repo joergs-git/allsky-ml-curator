@@ -44,6 +44,15 @@ struct MatrixView: View {
     @State private var selectionAnchor: Int = 0
     @FocusState private var isFocused: Bool
 
+    /// Confidence set by the prefix keys `q` (quick, 1) and `c`
+    /// (certain, 3) — the very next digit press commits with this
+    /// confidence attached to the label, then the mode resets. `nil`
+    /// means the next rating lands with confidence=null (the
+    /// backward-compatible default). Layout-agnostic: only plain `q`
+    /// and `c` characters are inspected, no Shift / Option modifier
+    /// contortions that break on non-US keyboards.
+    @State private var pendingConfidence: Int?
+
     private var gridColumns: [GridItem] {
         // Tight spacing so adjacent same-rating tiles visually merge
         // their colored bands into a continuous bar.
@@ -57,23 +66,31 @@ struct MatrixView: View {
 
     var body: some View {
         ScrollViewReader { proxy in
-            ScrollView {
-                LazyVGrid(columns: gridColumns, spacing: 2) {
-                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                        MatrixTileCell(
-                            item: item,
-                            isSelected: selectedIds.contains(item.id),
-                            isCursor: index == cursorIndex,
-                            prediction: predictions[item.id],
-                            nightMode: nightMode
-                        )
-                        .id(item.id)
-                        .onTapGesture {
-                            handleClick(item: item, index: index)
+            ZStack(alignment: .topTrailing) {
+                ScrollView {
+                    LazyVGrid(columns: gridColumns, spacing: 2) {
+                        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                            MatrixTileCell(
+                                item: item,
+                                isSelected: selectedIds.contains(item.id),
+                                isCursor: index == cursorIndex,
+                                prediction: predictions[item.id],
+                                nightMode: nightMode
+                            )
+                            .id(item.id)
+                            .onTapGesture {
+                                handleClick(item: item, index: index)
+                            }
                         }
                     }
+                    .padding(4)
                 }
-                .padding(4)
+
+                if let pending = pendingConfidence {
+                    confidenceHUD(pending)
+                        .padding(12)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
             }
             .focusable()
             .focused($isFocused)
@@ -169,6 +186,16 @@ struct MatrixView: View {
         // measuring the scroll view.
         let pageStep = max(columns, columns * 5)
 
+        // Esc is the escape hatch for an armed confidence prefix —
+        // without this, the user would have to press the same prefix
+        // key again (or commit a rating they don't want) to clear it.
+        if press.key == .escape, pendingConfidence != nil {
+            withAnimation(.easeInOut(duration: 0.12)) {
+                pendingConfidence = nil
+            }
+            return .handled
+        }
+
         switch press.key {
         case .leftArrow:
             // Shift+Left/Right mutate the selection by exactly one tile
@@ -219,16 +246,46 @@ struct MatrixView: View {
         }
 
         switch press.characters {
-        case "0": applyRating(.unrated);   return .handled
-        case "1": applyRating(.fullCloud); return .handled
-        case "2": applyRating(.mostly);    return .handled
-        case "3": applyRating(.some);      return .handled
-        case "4": applyRating(.thin);      return .handled
-        case "5": applyRating(.clear);     return .handled
+        case "0": applyRatingConsumingPending(.unrated);   return .handled
+        case "1": applyRatingConsumingPending(.fullCloud); return .handled
+        case "2": applyRatingConsumingPending(.mostly);    return .handled
+        case "3": applyRatingConsumingPending(.some);      return .handled
+        case "4": applyRatingConsumingPending(.thin);      return .handled
+        case "5": applyRatingConsumingPending(.clear);     return .handled
         case "r", "R": toggleFlag(.reflection);   return .handled
         case "t", "T": toggleFlag(.transitional); return .handled
+
+        // Confidence prefix keys. Pressing `q` / `c` arms the next
+        // digit press to carry confidence=1 (quick) or 3 (certain).
+        // Pressing the same key again clears the arm, so toggling
+        // stays discoverable.
+        case "q", "Q":
+            withAnimation(.easeInOut(duration: 0.12)) {
+                pendingConfidence = (pendingConfidence == 1) ? nil : 1
+            }
+            return .handled
+        case "c", "C":
+            withAnimation(.easeInOut(duration: 0.12)) {
+                pendingConfidence = (pendingConfidence == 3) ? nil : 3
+            }
+            return .handled
+
         default: return .ignored
         }
+    }
+
+    /// Wraps `applyRating` so the pending confidence flag is consumed
+    /// exactly once and the HUD resets. Keeping the rating-write
+    /// method pure lets the autonomous rater and other callers stay
+    /// confidence-agnostic.
+    private func applyRatingConsumingPending(_ cls: RatingClass) {
+        let confidence = pendingConfidence
+        if pendingConfidence != nil {
+            withAnimation(.easeInOut(duration: 0.12)) {
+                pendingConfidence = nil
+            }
+        }
+        applyRating(cls, confidence: confidence)
     }
 
     private func moveCursor(
@@ -310,13 +367,47 @@ struct MatrixView: View {
 
     // MARK: - Actions
 
+    /// Chip that surfaces the armed confidence so the curator sees
+    /// what the next digit will commit. Lives in the matrix overlay
+    /// rather than the toolbar because the muscle-memory path "press
+    /// c, then 3" never leaves the keyboard — the chip is right above
+    /// the grid the user is already looking at.
+    private func confidenceHUD(_ confidence: Int) -> some View {
+        let label = confidence == 1 ? "quick" : "certain"
+        let tint: Color = confidence == 1 ? .orange : .green
+        return HStack(spacing: 6) {
+            Circle()
+                .fill(tint)
+                .frame(width: 8, height: 8)
+            Text("Next digit: \(label)")
+                .font(.caption.weight(.semibold))
+            Text("(Esc to cancel)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            Capsule().fill(AppColors.bgToolbar(nightMode))
+        )
+        .overlay(
+            Capsule().stroke(tint.opacity(0.6), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
+    }
+
     private enum OrthogonalFlag { case reflection, transitional }
 
-    private func applyRating(_ ratingClass: RatingClass) {
+    private func applyRating(
+        _ ratingClass: RatingClass,
+        confidence: Int? = nil
+    ) {
         let ids = Array(selectedIds)
         guard !ids.isEmpty else { return }
         Task {
-            await ImageLibrary.shared.setRating(ratingClass, forImageIds: ids)
+            await ImageLibrary.shared.setRating(
+                ratingClass, forImageIds: ids, confidence: confidence
+            )
             await onMutation()
         }
     }
