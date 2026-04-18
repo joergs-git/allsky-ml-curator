@@ -2,6 +2,7 @@ import AppKit
 import CoreGraphics
 import CryptoKit
 import Foundation
+import GRDB
 import Vision
 
 /// Extracts an Apple Vision `FeaturePrint` from each allsky frame and
@@ -122,13 +123,27 @@ final class EmbeddingPipeline: @unchecked Sendable {
     ) async -> Embedding? {
         let sourceURL = URL(fileURLWithPath: imagePath)
 
+        // One full read of the JPEG bytes: feeds both the SHA-256
+        // content hash and the ImageIO source below. The ingest row
+        // was initially seeded with a path-identity hash (cheap, but
+        // useless across renames / multi-site deployments) and gets
+        // upgraded to the real content hash lazily on first embedding
+        // extraction. Keeping both consumers on a single read avoids
+        // hitting the SMB share twice per frame.
+        guard let imageData = try? Data(contentsOf: sourceURL) else {
+            return nil
+        }
+        let contentHash = SHA256.hash(data: imageData)
+            .map { String(format: "%02x", $0) }
+            .joined()
+
         // Vision downsamples to 224 internally — decoding the full
         // 3552×3552 JPEG just to throw the resolution away is a waste
         // and measurably slower on SMB shares. Pull an ImageIO
         // thumbnail first (≤ 1024 px long-edge), scale the fisheye
         // geometry to match, then mask + feed that to Vision.
-        guard let source = CGImageSourceCreateWithURL(
-            sourceURL as CFURL, nil
+        guard let source = CGImageSourceCreateWithData(
+            imageData as CFData, nil
         ) else { return nil }
 
         let thumbnailOptions: [CFString: Any] = [
@@ -188,7 +203,48 @@ final class EmbeddingPipeline: @unchecked Sendable {
         if let encoded = Self.encodeSidecar(embedding) {
             try? encoded.write(to: destination, options: .atomic)
         }
+
+        await Self.upgradeImageHash(
+            imagePath: imagePath, contentHash: contentHash
+        )
         return embedding
+    }
+
+    /// Replace the image row's path-identity hash with the real
+    /// content hash, and mark any previously-synced labels as needing
+    /// a re-push so Supabase receives the upgraded value. No-op when
+    /// the stored hash already matches — keeps the warmer idempotent
+    /// across restarts.
+    private static func upgradeImageHash(
+        imagePath: String, contentHash: String
+    ) async {
+        do {
+            try await Database.shared.writer.write { db in
+                guard let image = try ImageRecord
+                    .filter(ImageRecord.Columns.filePath == imagePath)
+                    .fetchOne(db)
+                else { return }
+                guard image.fileHashSha256 != contentHash else { return }
+                guard let imageId = image.id else { return }
+
+                try db.execute(
+                    sql: "UPDATE images SET fileHashSha256 = ? WHERE id = ?",
+                    arguments: [contentHash, imageId]
+                )
+                try db.execute(
+                    sql: """
+                        UPDATE labels
+                        SET syncedToSupabase = 0
+                        WHERE imageId = ? AND syncedToSupabase = 1
+                        """,
+                    arguments: [imageId]
+                )
+            }
+        } catch {
+            // Non-fatal — leave the old hash in place; a future
+            // extraction will retry. The embedding we just cached is
+            // still valid.
+        }
     }
 
     /// Extract a `[Float]` array from a `VNFeaturePrintObservation`
