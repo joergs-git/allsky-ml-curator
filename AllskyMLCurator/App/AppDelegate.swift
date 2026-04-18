@@ -19,8 +19,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // already written in the last session.
         BookmarkStore.shared.restoreAll()
 
+        // Repair any images.filePath that still carries the
+        // Synology-internal `/volume1/...` prefix. This only
+        // affects rows from the first weather-ingest run, before
+        // WeatherIngestSheet learned to remap the prefix. A no-op
+        // on a clean DB. Labels + predictions stay attached since
+        // we're only rewriting the path column.
+        repairLegacyVolumePaths()
+
         keyboardHandler = KeyboardHandler()
         keyboardHandler?.install()
+    }
+
+    private func repairLegacyVolumePaths() {
+        do {
+            let changed = try Database.shared.writer.write { db -> Int in
+                try db.execute(sql: """
+                    UPDATE images
+                    SET filePath = '/Volumes/' || SUBSTR(filePath, 10)
+                    WHERE filePath LIKE '/volume1/%'
+                    """)
+                return db.changesCount
+            }
+            if changed > 0 {
+                NSLog("AppDelegate repaired \(changed) /volume1 path prefixes at launch.")
+            }
+        } catch {
+            NSLog("AppDelegate /volume1 repair failed: \(error)")
+        }
     }
 
     /// Open (and migrate) the local SQLite store. The app can function
