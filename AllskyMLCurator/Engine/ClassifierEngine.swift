@@ -50,18 +50,32 @@ final class ClassifierEngine: ObservableObject {
 
     enum TrainingError: Error, LocalizedError {
         case noLabeledFrames
-        case noEmbeddingsAvailable
-        case insufficientClasses(classesSeen: Int)
+        case noEmbeddingsAvailable(totalRated: Int)
+        case partialEmbeddingCoverage(withEmbedding: Int, totalRated: Int, classCounts: [Int])
+        case insufficientClasses(withEmbedding: Int, totalRated: Int, classCounts: [Int])
 
         var errorDescription: String? {
             switch self {
             case .noLabeledFrames:
-                return "No human-rated frames yet — rate at least a handful across a couple of classes first."
-            case .noEmbeddingsAvailable:
-                return "No cached embeddings — scroll the matrix so the embedding generator has a chance to warm up, then retrain."
-            case .insufficientClasses(let n):
-                return "Only \(n) distinct classes have been rated so far. The classifier needs at least 2."
+                return "No human-rated frames yet. Rate at least a handful across two or more classes, then retrain."
+
+            case .noEmbeddingsAvailable(let totalRated):
+                return "\(totalRated) rated, but none of them have a cached embedding yet. Scroll through the matrix so the embedding generator catches up (watch the embed chip), then retrain."
+
+            case .partialEmbeddingCoverage(let emb, let total, let counts):
+                return "Only \(emb) of \(total) rated frames have a cached embedding, and so far they all fall into one class — \(Self.countsBreakdown(counts)). Scroll further (or wait) for the embedding generator to cover more classes, then retrain."
+
+            case .insufficientClasses(let emb, let total, let counts):
+                return "\(emb) of \(total) rated frames have a cached embedding, all in one class — \(Self.countsBreakdown(counts)). The classifier needs at least two distinct classes. Rate at least one frame in a different class and retrain."
             }
+        }
+
+        fileprivate static func countsBreakdown(_ counts: [Int]) -> String {
+            let labels = ["1", "2", "3", "4", "5"]
+            let parts = zip(labels, counts)
+                .filter { $0.1 > 0 }
+                .map { "\($0.0): \($0.1)" }
+            return parts.isEmpty ? "none" : parts.joined(separator: ", ")
         }
     }
 
@@ -70,6 +84,16 @@ final class ClassifierEngine: ObservableObject {
     @Published private(set) var summary: TrainingSummary?
     @Published private(set) var isTraining: Bool = false
     @Published private(set) var lastError: String?
+    /// Last computed breakdown of the training set (rated totals,
+    /// embedded count, per-class counts). Available even when
+    /// training failed — powers the toolbar status line.
+    @Published private(set) var lastCoverage: TrainingCoverage?
+
+    struct TrainingCoverage: Equatable, Sendable {
+        var totalRated: Int
+        var withEmbedding: Int
+        var classCounts: [Int]      // length numClasses
+    }
     /// Predictions for every image the classifier has seen so far.
     /// Repopulated from a fresh `train()` + inference pass. Keyed by
     /// ImageRecord id.
@@ -106,14 +130,43 @@ final class ClassifierEngine: ObservableObject {
 
         do {
             let started = Date()
-            let samples = try await loadTrainingSet()
+            let diagnostics = try await loadTrainingSet()
+            let samples = diagnostics.samples
 
             var classCounts = [Int](repeating: 0, count: numClasses)
             for sample in samples { classCounts[sample.classIndex] += 1 }
 
             let distinctClasses = classCounts.filter { $0 > 0 }.count
-            guard distinctClasses >= 2 else {
-                throw TrainingError.insufficientClasses(classesSeen: distinctClasses)
+            let embeddedCount = samples.count
+
+            lastCoverage = TrainingCoverage(
+                totalRated: diagnostics.totalRated,
+                withEmbedding: embeddedCount,
+                classCounts: classCounts
+            )
+
+            if embeddedCount == 0 {
+                throw TrainingError.noEmbeddingsAvailable(
+                    totalRated: diagnostics.totalRated
+                )
+            }
+            if distinctClasses < 2 {
+                // Tell the user whether the coverage gap (few
+                // embeddings) or the labeling spread (one class only)
+                // is the real blocker — they require different fixes.
+                if embeddedCount < diagnostics.totalRated / 2 {
+                    throw TrainingError.partialEmbeddingCoverage(
+                        withEmbedding: embeddedCount,
+                        totalRated: diagnostics.totalRated,
+                        classCounts: classCounts
+                    )
+                } else {
+                    throw TrainingError.insufficientClasses(
+                        withEmbedding: embeddedCount,
+                        totalRated: diagnostics.totalRated,
+                        classCounts: classCounts
+                    )
+                }
             }
 
             let weightsPerSample = sampleWeights(
@@ -168,6 +221,30 @@ final class ClassifierEngine: ObservableObject {
         predictions = [:]
     }
 
+    /// Recompute the coverage snapshot without actually training.
+    /// Powers the toolbar chip's status line so the user sees
+    /// "X of Y rated, classes {1: 822}" before they even hit Train.
+    func refreshCoverage() async {
+        do {
+            let diag = try await loadTrainingSet()
+            var counts = [Int](repeating: 0, count: numClasses)
+            for sample in diag.samples { counts[sample.classIndex] += 1 }
+            lastCoverage = TrainingCoverage(
+                totalRated: diag.totalRated,
+                withEmbedding: diag.samples.count,
+                classCounts: counts
+            )
+        } catch TrainingError.noLabeledFrames {
+            lastCoverage = TrainingCoverage(
+                totalRated: 0, withEmbedding: 0,
+                classCounts: [Int](repeating: 0, count: numClasses)
+            )
+        } catch {
+            // Silent — we don't want refresh failures to surface as
+            // a red error line in the toolbar on every app launch.
+        }
+    }
+
     // MARK: - Data loading
 
     private struct LabeledSample: Sendable {
@@ -176,38 +253,39 @@ final class ClassifierEngine: ObservableObject {
         let classIndex: Int   // 0…4 → RatingClass 1…5
     }
 
+    /// Result of a training-set build. `totalRated` is the raw count
+    /// of human-labelled images (regardless of embedding coverage)
+    /// so the error path can tell the user whether the blocker is
+    /// "rate more variety" or "wait for embeddings".
+    private struct TrainingSetDiagnostics {
+        let samples: [LabeledSample]
+        let totalRated: Int
+    }
+
     /// Read every rated image that has a cached embedding, build its
     /// feature vector, and return the aligned (features, class) pairs.
-    private func loadTrainingSet() async throws -> [LabeledSample] {
+    private func loadTrainingSet() async throws -> TrainingSetDiagnostics {
         let reader = Database.shared.reader
-        let images = try await reader.read { db -> [ImageRecord] in
-            let ratedImageIds = try LabelRecord
+
+        let labels = try await reader.read { db in
+            try LabelRecord
                 .filter(Column("isCurrent") == true)
                 .filter(Column("source") == "human")
                 .filter(Column("ratingClass") != RatingClass.unrated.rawValue)
-                .select(Column("imageId"), as: Int64.self)
-                .fetchAll(db)
-            guard !ratedImageIds.isEmpty else { return [] }
-            return try ImageRecord
-                .filter(ratedImageIds.contains(Column("id")))
                 .fetchAll(db)
         }
+        guard !labels.isEmpty else { throw TrainingError.noLabeledFrames }
 
-        guard !images.isEmpty else { throw TrainingError.noLabeledFrames }
-
+        let labelImageIds = labels.map(\.imageId)
+        let images = try await reader.read { db in
+            try ImageRecord
+                .filter(labelImageIds.contains(Column("id")))
+                .fetchAll(db)
+        }
         let imageByIdPairs: [(Int64, ImageRecord)] = images.compactMap { img in
             img.id.map { ($0, img) }
         }
         let imageById = Dictionary(uniqueKeysWithValues: imageByIdPairs)
-        let imageIds = imageByIdPairs.map(\.0)
-
-        let labels = try await reader.read { db in
-            try LabelRecord
-                .filter(imageIds.contains(Column("imageId")))
-                .filter(Column("isCurrent") == true)
-                .filter(Column("source") == "human")
-                .fetchAll(db)
-        }
 
         var samples: [LabeledSample] = []
         samples.reserveCapacity(labels.count)
@@ -224,9 +302,11 @@ final class ClassifierEngine: ObservableObject {
             )
         }
 
-        guard !samples.isEmpty else { throw TrainingError.noEmbeddingsAvailable }
-        featureDim = samples[0].features.count
-        return samples
+        if let first = samples.first { featureDim = first.features.count }
+        return TrainingSetDiagnostics(
+            samples: samples,
+            totalRated: labels.count
+        )
     }
 
     private func sampleWeights(

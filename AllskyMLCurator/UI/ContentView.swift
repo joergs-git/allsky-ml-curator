@@ -42,11 +42,12 @@ struct ContentView: View {
         .background(AppColors.bg(nightMode))
         .task { await reload() }
         .task {
-            // Poll the embedding sidecar count every 2 s so the
-            // toolbar chip advances as the background generator
-            // writes files. Cheap — it's just a directory listing.
+            // Poll the embedding sidecar count + classifier coverage
+            // every 2 s so the toolbar chips advance live as the
+            // background generator writes files and ratings flow in.
             while !Task.isCancelled {
                 embeddedCount = EmbeddingPipeline.sidecarCount()
+                await classifier.refreshCoverage()
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
@@ -155,10 +156,21 @@ struct ContentView: View {
 
     private var classifierStatusText: String {
         if classifier.isTraining { return "training…" }
-        if let error = classifier.lastError { return error }
-        guard let summary = classifier.summary else { return "untrained" }
-        let acc = Int(summary.trainAccuracy * 100)
-        return "\(summary.sampleCount) labels · \(acc)% train"
+        if let summary = classifier.summary {
+            let acc = Int(summary.trainAccuracy * 100)
+            return "\(summary.sampleCount) labels · \(acc)% train"
+        }
+        if let coverage = classifier.lastCoverage {
+            // Show the embedded / rated ratio + class spread so the
+            // user sees at a glance whether Train will succeed.
+            let spread = coverage.classCounts
+                .enumerated()
+                .filter { $0.element > 0 }
+                .map { "\($0.offset + 1):\($0.element)" }
+                .joined(separator: " ")
+            return "\(coverage.withEmbedding) / \(coverage.totalRated) rated embedded · classes [\(spread)]"
+        }
+        return "untrained"
     }
 
     /// Embedding coverage — counts how many Vision feature-print
