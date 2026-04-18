@@ -171,6 +171,18 @@ final class Database {
             }
         }
 
+        // Meteoblue FK column. Added so ingest can attach a
+        // `meteoblue_hourly.id` per frame (±30 min match window) and
+        // SyncEngine can forward it to `ml_training_samples`.
+        migrator.registerMigration("v4_add_meteoblue_hour_id") { db in
+            let existing = Set((try? db.columns(in: "images"))?.map(\.name) ?? [])
+            try db.alter(table: "images") { t in
+                if !existing.contains("meteoblueHourId") {
+                    t.add(column: "meteoblueHourId", .integer)
+                }
+            }
+        }
+
         return migrator
     }
 }
