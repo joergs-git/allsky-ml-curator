@@ -23,7 +23,7 @@ struct ContentView: View {
     @State private var onlyUnrated: Bool = false
     @State private var columns: Int = 6
     @State private var showIngestSheet: Bool = false
-    @State private var showInfoPopover: Bool = false
+    @State private var showInfoPanel: Bool = true
     @State private var isLoading: Bool = false
     @State private var nightMode: Bool = AppSettings.shared.nightMode
 
@@ -41,12 +41,31 @@ struct ContentView: View {
         VStack(spacing: 0) {
             toolbar
             Divider()
-            if items.isEmpty && !isLoading {
-                emptyState
-            } else {
-                matrix
-                Divider()
-                keybindLegend
+            HStack(spacing: 0) {
+                VStack(spacing: 0) {
+                    if items.isEmpty && !isLoading {
+                        emptyState
+                    } else {
+                        matrix
+                        Divider()
+                        keybindLegend
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                if showInfoPanel {
+                    Divider()
+                    InfoSidePanel(
+                        items: items,
+                        selectedIds: selectedIds,
+                        embeddedCount: embeddedCount,
+                        classifier: classifier,
+                        sync: sync,
+                        nightMode: nightMode
+                    )
+                    .frame(width: 360)
+                    .transition(.move(edge: .trailing))
+                }
             }
         }
         .background(AppColors.bg(nightMode))
@@ -337,28 +356,26 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Info popover
+    // MARK: - Info side panel toggle
 
     private var infoButton: some View {
         Button {
-            showInfoPopover.toggle()
+            withAnimation(.easeInOut(duration: 0.2)) {
+                showInfoPanel.toggle()
+            }
         } label: {
-            Image(systemName: "info.circle")
+            Image(systemName: showInfoPanel
+                  ? "sidebar.right"
+                  : "sidebar.left")
                 .font(.system(size: 22, weight: .medium))
-                .foregroundStyle(AppColors.fgDim(nightMode))
+                .foregroundStyle(
+                    showInfoPanel
+                    ? AppColors.fg(nightMode)
+                    : AppColors.fgDim(nightMode)
+                )
         }
         .buttonStyle(.plain)
-        .help("Live status & coverage details")
-        .popover(isPresented: $showInfoPopover, arrowEdge: .top) {
-            InfoPopoverContent(
-                items: items,
-                selectedIds: selectedIds,
-                embeddedCount: embeddedCount,
-                classifier: classifier,
-                sync: sync
-            )
-            .frame(width: 420)
-        }
+        .help(showInfoPanel ? "Hide status panel" : "Show status panel")
     }
 
     private var matrix: some View {
