@@ -236,39 +236,54 @@ struct ContentView: View {
 
     // MARK: - Auto-rate
 
-    /// One-shot autonomous rating button. Applies the current
-    /// classifier's top prediction to every unrated tile in the
-    /// visible filter whose top probability clears the Preferences
-    /// threshold. Gated by a minimum human-label count (200 by
-    /// default) to keep a freshly-seeded model from runaway
-    /// confirmation bias. Result is reported via `autoRateAlert`.
+    /// Streaming autonomous rating button. Press once to start: the
+    /// rater walks every unrated tile in the visible filter, commits
+    /// high-confidence predictions one at a time, and the matrix
+    /// animates the new ratings in as it goes. Press again (or ⌘⇧A)
+    /// to cancel mid-stream. Gated by a minimum human-label count
+    /// (200 by default) to keep a freshly-seeded model from runaway
+    /// confirmation bias.
     private var autoRateButton: some View {
         Button {
-            runAutoRate()
+            if autoRater.isRunning {
+                autoRater.stop()
+            } else {
+                runAutoRate()
+            }
         } label: {
-            Label(
-                autoRater.isRunning ? "Auto-rating…" : "Auto-rate",
-                systemImage: "wand.and.stars"
-            )
-            .font(.body.weight(.medium))
+            HStack(spacing: 6) {
+                Image(systemName: autoRater.isRunning ? "stop.circle.fill" : "wand.and.stars")
+                    .font(.body.weight(.medium))
+                Text(autoRateButtonLabel)
+                    .font(.body.weight(.medium))
+            }
         }
         .controlSize(.large)
         .keyboardShortcut("a", modifiers: [.command, .shift])
-        .disabled(autoRater.isRunning || items.isEmpty)
-        .help("Apply high-confidence classifier predictions to every unrated tile in the current filter (⌘⇧A)")
+        .disabled(!autoRater.isRunning && items.isEmpty)
+        .tint(autoRater.isRunning ? .orange : .accentColor)
+        .help("Stream high-confidence classifier predictions into every unrated tile in the current filter. Press again to cancel mid-stream. (⌘⇧A)")
+    }
+
+    private var autoRateButtonLabel: String {
+        if let progress = autoRater.progress, autoRater.isRunning {
+            return "Auto-rate \(progress.done)/\(progress.total) — stop"
+        }
+        return autoRater.isRunning ? "Stop auto-rate" : "Auto-rate"
     }
 
     private func runAutoRate() {
         Task {
-            let result = await autoRater.run(on: items)
+            let result = await autoRater.stream(
+                on: items,
+                onBatch: { await reload() }
+            )
             switch result {
             case .success(let summary):
                 autoRateAlert = AutoRateAlertContent(
-                    title: "Auto-rate complete",
+                    title: summary.wasStopped ? "Auto-rate stopped" : "Auto-rate complete",
                     message: summary.userMessage
                 )
-                // Refresh the list so the newly auto-rated tiles pick
-                // up their prediction-driven tier colors.
                 await reload()
             case .failure(let err):
                 autoRateAlert = AutoRateAlertContent(
