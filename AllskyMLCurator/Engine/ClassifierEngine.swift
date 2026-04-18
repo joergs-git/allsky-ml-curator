@@ -322,25 +322,75 @@ final class ClassifierEngine: ObservableObject {
     /// Recompute the coverage snapshot without actually training.
     /// Powers the toolbar chip's status line so the user sees
     /// "X of Y rated, classes {1: 822}" before they even hit Train.
+    ///
+    /// Performance-critical: fires from a 2-second poll in
+    /// ContentView. The old implementation delegated to
+    /// `loadTrainingSet()` which decoded every 768-float sidecar into
+    /// an actual feature vector (for the classifier's training path)
+    /// — on a MainActor-isolated engine with ~5 k labels that was
+    /// ~5 s of main-thread work every 2 s, starving tile rendering
+    /// until the grid looked "stuck at first 100 thumbnails". This
+    /// counts-only variant runs off MainActor via `Task.detached` and
+    /// checks sidecar *existence* (one `stat` per file) instead of
+    /// decoding the floats.
     func refreshCoverage() async {
-        do {
-            let diag = try await loadTrainingSet()
-            var counts = [Int](repeating: 0, count: numClasses)
-            for sample in diag.samples { counts[sample.classIndex] += 1 }
-            lastCoverage = TrainingCoverage(
-                totalRated: diag.totalRated,
-                withEmbedding: diag.samples.count,
-                classCounts: counts
-            )
-        } catch TrainingError.noLabeledFrames {
-            lastCoverage = TrainingCoverage(
-                totalRated: 0, withEmbedding: 0,
+        let numClasses = self.numClasses
+        let computed = await Task.detached(priority: .utility) {
+            () -> TrainingCoverage? in
+            return try? Self.computeCoverageSnapshot(numClasses: numClasses)
+        }.value
+        if let computed { lastCoverage = computed }
+    }
+
+    /// Pure function: reads DB + does fast file-existence checks,
+    /// returns a `TrainingCoverage` or throws. Called from a detached
+    /// task so the main thread never spends time on sidecar I/O.
+    nonisolated private static func computeCoverageSnapshot(
+        numClasses: Int
+    ) throws -> TrainingCoverage {
+        let reader = Database.shared.reader
+        let labels = try reader.read { db in
+            try LabelRecord
+                .filter(Column("isCurrent") == true)
+                .filter(Column("source") == "human")
+                .filter(Column("ratingClass") != RatingClass.unrated.rawValue)
+                .fetchAll(db)
+        }
+        if labels.isEmpty {
+            return TrainingCoverage(
+                totalRated: 0,
+                withEmbedding: 0,
                 classCounts: [Int](repeating: 0, count: numClasses)
             )
-        } catch {
-            // Silent — we don't want refresh failures to surface as
-            // a red error line in the toolbar on every app launch.
         }
+
+        let labelImageIds = labels.map(\.imageId)
+        let images = try reader.read { db in
+            try ImageRecord
+                .filter(labelImageIds.contains(Column("id")))
+                .fetchAll(db)
+        }
+        let imageById = Dictionary(
+            uniqueKeysWithValues: images.compactMap { img in
+                img.id.map { ($0, img) }
+            }
+        )
+
+        var counts = [Int](repeating: 0, count: numClasses)
+        var embedded = 0
+        for label in labels {
+            guard label.ratingClass.rawValue >= 1 else { continue }
+            counts[label.ratingClass.rawValue - 1] += 1
+            if let image = imageById[label.imageId],
+               EmbeddingPipeline.shared.sidecarExists(for: image.filePath) {
+                embedded += 1
+            }
+        }
+        return TrainingCoverage(
+            totalRated: labels.count,
+            withEmbedding: embedded,
+            classCounts: counts
+        )
     }
 
     // MARK: - Data loading
