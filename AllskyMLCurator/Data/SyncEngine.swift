@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import GRDB
 
@@ -112,6 +113,26 @@ final class SyncEngine: ObservableObject {
         }
     }
 
+    /// Mark every local label as unsynced so the next `pushPending`
+    /// re-uploads the full set. Used after a DTO-shape change (new
+    /// column, bug fix) where rows already in Supabase need their
+    /// refreshed values. Safe to call any time — Supabase upserts
+    /// on `image_path`, so identical content is a no-op server-side.
+    func markAllForResync() async {
+        let writer = Database.shared.writer
+        do {
+            try await writer.write { db in
+                try LabelRecord
+                    .filter(Column("syncedToSupabase") == true)
+                    .updateAll(db, [
+                        Column("syncedToSupabase").set(to: false)
+                    ])
+            }
+        } catch {
+            NSLog("SyncEngine.markAllForResync failed: \(error)")
+        }
+    }
+
     // MARK: - Data loading
 
     private var lastSyncCount: Int = 0
@@ -197,7 +218,7 @@ final class SyncEngine: ObservableObject {
             class: label.ratingClass.rawValue,
             reflection_flag: label.reflectionFlag ? 1 : 0,
             transitional_flag: label.transitionalFlag ? 1 : 0,
-            camera_profile_id: nil,
+            camera_profile_id: cameraProfileHash(for: image),
             time_of_day: image.timeOfDay.rawValue,
             source: label.source.rawValue,
             sample_weight: label.sampleWeight,
@@ -205,6 +226,43 @@ final class SyncEngine: ObservableObject {
             annotator_id: label.annotatorId,
             labeled_at: iso8601Formatter.string(from: label.labeledAt)
         )
+    }
+
+    /// Derive a stable profile identifier from the observatory
+    /// coordinates + camera parameters actually used at ingest time.
+    /// Same rig across two machines produces the same hash (good for
+    /// cross-user dataset sharing later), two different rigs at the
+    /// same site produce different hashes, two identical rigs at
+    /// different sites produce different hashes.
+    nonisolated private static func cameraProfileHash(
+        for image: ImageRecord
+    ) -> String {
+        let s = AppSettings.shared
+        let cameraType = image.cameraSource.cameraType
+        let fov: Double
+        let centerX: Int, centerY: Int, radius: Int
+        switch cameraType {
+        case .color:
+            fov = s.colorFovDeg
+            centerX = s.colorFisheyeCenterXPx
+            centerY = s.colorFisheyeCenterYPx
+            radius  = s.colorFisheyeRadiusPx
+        case .monochrome:
+            fov = s.monoFovDeg
+            centerX = s.monoFisheyeCenterXPx
+            centerY = s.monoFisheyeCenterYPx
+            radius  = s.monoFisheyeRadiusPx
+        }
+        let material = String(
+            format: "%.3f|%.3f|%@|%.1f|%d|%d|%d",
+            s.latitudeDeg, s.longitudeDeg,
+            cameraType.rawValue, fov,
+            centerX, centerY, radius
+        )
+        let digest = SHA256.hash(data: Data(material.utf8))
+        // 12 hex chars of digest keeps the column readable while still
+        // being collision-free in any realistic multi-rig setting.
+        return String(digest.map { String(format: "%02x", $0) }.joined().prefix(12))
     }
 }
 

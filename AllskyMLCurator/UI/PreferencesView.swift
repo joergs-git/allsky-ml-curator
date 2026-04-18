@@ -219,6 +219,32 @@ struct PreferencesView: View {
 
     private var advancedTab: some View {
         Form {
+            Section("Supabase") {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Resend all ratings to Supabase")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Flips `synced_to_supabase = false` on every local label, so the next push re-uploads the full set. Use after a DTO change that adds fields (image hash, camera profile id, …) so the server rows catch up. Safe — Supabase upserts on image_path, identical content is a no-op.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
+                    Button("Resend…") {
+                        Task {
+                            purgeStatus = "Marking all labels for resync…"
+                            isPurging = true
+                            await SyncEngine.shared.markAllForResync()
+                            await SyncEngine.shared.pushPending()
+                            purgeStatus = "Resync triggered. Watch the sync gauge."
+                            isPurging = false
+                        }
+                    }
+                    .disabled(isPurging)
+                }
+                .padding(.vertical, 4)
+            }
+
             Section("Fresh start") {
                 Text("These actions are destructive. Use only when you want to wipe state and restart from scratch — e.g. after a schema change or a bad ingest run. Supabase rows and the Keychain (Supabase URL / key) are preserved.")
                     .font(.caption)
