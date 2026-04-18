@@ -50,6 +50,7 @@ struct MatrixView: View {
                         MatrixTileCell(
                             item: item,
                             isSelected: selectedIds.contains(item.id),
+                            isCursor: index == cursorIndex,
                             nightMode: nightMode
                         )
                         .id(item.id)
