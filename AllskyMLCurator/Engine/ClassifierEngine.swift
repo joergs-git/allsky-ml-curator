@@ -289,7 +289,12 @@ final class ClassifierEngine: ObservableObject {
     private struct LabeledSample: Sendable {
         let imageId: Int64
         let features: [Float]
-        let classIndex: Int   // 0…4 → RatingClass 1…5
+        let classIndex: Int         // 0…4 → RatingClass 1…5
+        /// Per-sample weight from `LabelRecord.sampleWeight` —
+        /// transitional human labels carry 0.5, auto-confirmed 0.3,
+        /// plain human labels 1.0. Multiplied into the class-weight
+        /// before training so noisy samples really do contribute less.
+        let labelWeight: Float
     }
 
     /// Result of a training-set build. `totalRated` is the raw count
@@ -336,7 +341,8 @@ final class ClassifierEngine: ObservableObject {
                 LabeledSample(
                     imageId: label.imageId,
                     features: vector,
-                    classIndex: label.ratingClass.rawValue - 1   // 1…5 → 0…4
+                    classIndex: label.ratingClass.rawValue - 1,   // 1…5 → 0…4
+                    labelWeight: Float(label.sampleWeight)
                 )
             )
         }
@@ -367,7 +373,14 @@ final class ClassifierEngine: ObservableObject {
         let mean = classWeights.reduce(0, +) / Float(numClasses)
         if mean > 0 { for c in 0..<numClasses { classWeights[c] /= mean } }
 
-        return samples.map { classWeights[$0.classIndex] }
+        // Multiply the per-label sampleWeight into the per-sample
+        // weight so `transitional_flag = true` human labels (weight
+        // 0.5) and `auto_confirmed` labels (0.3) drag the gradient
+        // proportionally less. Without this step the 0.5 sat idly on
+        // the label rows without ever reaching the optimiser.
+        return samples.map {
+            classWeights[$0.classIndex] * $0.labelWeight
+        }
     }
 
     // MARK: - Gradient descent

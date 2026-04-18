@@ -409,7 +409,7 @@ struct ContentView: View {
             Divider().frame(height: 18)
 
             legendFlagChip(key: "R", color: AppColors.reflectionFlag(nightMode),
-                           label: "reflection (sun / moon on the dome)")
+                           label: "artificial reflection (street lights etc.)")
             legendFlagChip(key: "T", color: AppColors.transitionalFlag(nightMode),
                            label: "transitional (dusk / gain-settling garbage)")
 
