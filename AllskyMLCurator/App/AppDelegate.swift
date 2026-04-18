@@ -33,16 +33,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func repairLegacyVolumePaths() {
         do {
-            let changed = try Database.shared.writer.write { db -> Int in
+            let (prefixFixed, cameraFixed) = try Database.shared.writer.write { db -> (Int, Int) in
+                // 1. Synology-internal prefix → local mount prefix.
                 try db.execute(sql: """
                     UPDATE images
                     SET filePath = '/Volumes/' || SUBSTR(filePath, 10)
                     WHERE filePath LIKE '/volume1/%'
                     """)
-                return db.changesCount
+                let prefix = db.changesCount
+
+                // 2. cameraSource ↔ path-pattern consistency for the
+                // Rheine rig. The first weather-ingest pass (before
+                // aa24653) pulled allsky_url for `.color` which is
+                // actually the mono camera's path on this user's
+                // setup. Fix: anything under `/zwo/` is the colour
+                // ZWO ASI676MC, everything else under
+                // `/Volumes/AllSky-Rheine/` is the mono SX CCD.
+                // Deterministic rewrite; labels + predictions keep
+                // their FK on the image row.
+                try db.execute(sql: """
+                    UPDATE images
+                    SET cameraSource = 'mono_allsky_jpg'
+                    WHERE cameraSource = 'color_allsky_jpg'
+                      AND filePath LIKE '/Volumes/AllSky-Rheine/%'
+                      AND filePath NOT LIKE '/Volumes/AllSky-Rheine/zwo/%'
+                    """)
+                let toMono = db.changesCount
+
+                try db.execute(sql: """
+                    UPDATE images
+                    SET cameraSource = 'color_allsky_jpg'
+                    WHERE cameraSource = 'mono_allsky_jpg'
+                      AND filePath LIKE '/Volumes/AllSky-Rheine/zwo/%'
+                    """)
+                let toColor = db.changesCount
+
+                return (prefix, toMono + toColor)
             }
-            if changed > 0 {
-                NSLog("AppDelegate repaired \(changed) /volume1 path prefixes at launch.")
+            if prefixFixed > 0 {
+                NSLog("AppDelegate repaired \(prefixFixed) /volume1 path prefixes at launch.")
+            }
+            if cameraFixed > 0 {
+                NSLog("AppDelegate repaired \(cameraFixed) cameraSource mismatches at launch.")
             }
         } catch {
             NSLog("AppDelegate /volume1 repair failed: \(error)")
