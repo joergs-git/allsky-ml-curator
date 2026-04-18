@@ -430,6 +430,39 @@ struct PreferencesView: View {
                 .padding(.vertical, 4)
             }
 
+            Section("Sandbox access") {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Grant folder access")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Re-authorise the sandbox for a folder (e.g. /Volumes/AllSky-Rheine). A security-scoped bookmark is stored so access persists across app relaunches. Without this, the matrix loses SMB read access every time you quit and the thumbnail / embedding pipelines silently fail for anything not already cached on disk.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        let granted = BookmarkStore.shared.grantedPaths
+                        if !granted.isEmpty {
+                            VStack(alignment: .leading, spacing: 2) {
+                                ForEach(granted, id: \.self) { p in
+                                    HStack {
+                                        Image(systemName: "checkmark.seal.fill")
+                                            .foregroundStyle(.green)
+                                        Text(p)
+                                            .font(.caption.monospaced())
+                                            .textSelection(.enabled)
+                                    }
+                                }
+                            }
+                            .padding(.top, 4)
+                        }
+                    }
+                    Spacer()
+                    Button("Grant…") {
+                        grantFolderAccess()
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+
             Section("Thumbnail repair") {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -521,6 +554,21 @@ struct PreferencesView: View {
             purgeStatus = summary
             isPurging = false
         }
+    }
+
+    private func grantFolderAccess() {
+        let panel = NSOpenPanel()
+        panel.title = "Grant access to the allsky root folder"
+        panel.message = "Pick the parent folder that holds every image date directory (e.g. /Volumes/AllSky-Rheine). A security-scoped bookmark is persisted so the sandbox keeps access across app relaunches."
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Grant"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let ok = BookmarkStore.shared.save(url)
+        purgeStatus = ok
+            ? "Bookmark saved — access restored for \(url.path)."
+            : "Bookmark save failed. Check Console.app for details."
     }
 
     private func startThumbnailRebuild() {

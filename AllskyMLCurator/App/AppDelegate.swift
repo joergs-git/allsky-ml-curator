@@ -12,6 +12,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         openDatabase()
+        // Re-establish sandbox access to every folder the user
+        // previously granted so thumbnail / embedding pipelines keep
+        // reading SMB files across relaunches. Without this the
+        // matrix shows spinners for any tile whose HEIC wasn't
+        // already written in the last session.
+        BookmarkStore.shared.restoreAll()
 
         keyboardHandler = KeyboardHandler()
         keyboardHandler?.install()

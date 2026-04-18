@@ -195,6 +195,9 @@ struct IngestSheet: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         selectedFolder = url
         AppSettings.shared.lastIngestedFolderPath = url.path
+        // Persist a security-scoped bookmark so future app launches
+        // retain read access to this folder and its SMB contents.
+        BookmarkStore.shared.save(url)
     }
 
     private func restoreLastSelection() {
