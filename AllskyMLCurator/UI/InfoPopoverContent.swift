@@ -29,14 +29,17 @@ struct InfoPopoverContent: View {
             }
 
             section("Embeddings", icon: "cpu") {
-                keyValueRow(
-                    "Cached sidecars",
-                    "\(embeddedCount) (\(percent(embeddedCount, items.count)))"
-                )
+                // No percent here — `embeddedCount` sums every sidecar
+                // on disk (all cameras, ingested or filtered out), so
+                // dividing by the filtered `items.count` gave useless
+                // numbers like 5310 %. The meaningful ratio lives in
+                // the "Rated ↔ embedded" row right below.
+                keyValueRow("Cached sidecars", "\(embeddedCount)")
                 if let coverage = classifier.lastCoverage {
+                    let pct = percent(coverage.withEmbedding, coverage.totalRated)
                     keyValueRow(
                         "Rated ↔ embedded",
-                        "\(coverage.withEmbedding) of \(coverage.totalRated)"
+                        "\(coverage.withEmbedding) of \(coverage.totalRated) (\(pct))"
                     )
                 }
                 keyValueRow("Pipeline", "Apple Vision FeaturePrint")
@@ -82,21 +85,35 @@ struct InfoPopoverContent: View {
                 }
             }
 
-            if !hints.isEmpty {
+            if !analysisTips.isEmpty {
                 Divider()
-                VStack(alignment: .leading, spacing: 6) {
-                    Label("Hints", systemImage: "lightbulb")
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Analysis helper", systemImage: "lightbulb")
                         .font(.callout.weight(.semibold))
                         .foregroundStyle(.orange)
-                    ForEach(hints, id: \.self) { hint in
-                        Text("• \(hint)")
-                            .font(.caption)
-                            .fixedSize(horizontal: false, vertical: true)
+                    ForEach(analysisTips, id: \.title) { tip in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(tip.title)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.primary)
+                            Text(tip.body)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
             }
         }
         .padding(16)
+    }
+
+    /// A single actionable tip shown inside the Analysis Helper block.
+    /// `title` reads like a headline, `body` spells out what the user
+    /// can try next.
+    private struct AnalysisTip: Hashable {
+        let title: String
+        let body: String
     }
 
     // MARK: - Header
@@ -184,31 +201,108 @@ struct InfoPopoverContent: View {
         return "\(Int(Double(n) * 100 / Double(total))) %"
     }
 
-    /// Contextual one-line hints shown only when they apply.
-    private var hints: [String] {
-        var result: [String] = []
+    /// Rich, context-aware advice shown as the "Analysis helper"
+    /// block. Rules inspect every engine's state and surface only the
+    /// tips that currently apply — so the user sees concrete next
+    /// actions instead of a laundry list.
+    private var analysisTips: [AnalysisTip] {
+        var result: [AnalysisTip] = []
+
+        // --- Configuration / data gaps ---------------------------------
 
         if sync.status == .notConfigured {
-            result.append("Supabase isn't configured — ratings are safe locally but won't sync. Preferences → Supabase.")
+            result.append(AnalysisTip(
+                title: "Supabase isn't configured",
+                body: "Ratings are safe locally but won't sync to the shared astro-weather project. Preferences → Supabase → paste URL + anon key → Save."
+            ))
+        }
+        if case .failed(let message) = sync.status {
+            result.append(AnalysisTip(
+                title: "Sync push failed",
+                body: "\(message)\n\nIf the error mentions HTTP 409 / duplicate key the curator is already at the latest build that sends `on_conflict=image_path` — pull main and retry. For other errors paste the message into a bug report; the full text is selectable above."
+            ))
         }
         if items.isEmpty {
-            result.append("No frames indexed yet — ⌘O to ingest a folder.")
+            result.append(AnalysisTip(
+                title: "No frames indexed yet",
+                body: "⌘O opens the ingest sheet. Pick the folder under your Synology mount, choose the camera type and image format, run Dry-run first to verify the count, then Ingest."
+            ))
         }
-        if let coverage = classifier.lastCoverage {
-            if coverage.withEmbedding < coverage.totalRated {
-                let missing = coverage.totalRated - coverage.withEmbedding
-                result.append("\(missing) rated frames still need embeddings. Background warmer is catching up; ⌘T works once coverage is ≥ 2 classes.")
+
+        // --- Embedding readiness ---------------------------------------
+
+        if let coverage = classifier.lastCoverage,
+           coverage.totalRated > 0,
+           coverage.withEmbedding < coverage.totalRated {
+            let missing = coverage.totalRated - coverage.withEmbedding
+            result.append(AnalysisTip(
+                title: "Embedding catch-up in progress",
+                body: "\(missing) rated frames don't have a cached Vision embedding yet. The launch-time warmer is processing them in the background — watch the Embeddings gauge fill. Training needs ≥ 2 classes of embedded frames to succeed."
+            ))
+        }
+
+        // --- Class spread ---------------------------------------------
+
+        if let coverage = classifier.lastCoverage, coverage.totalRated > 0 {
+            let present = coverage.classCounts.filter { $0 > 0 }.count
+            if present < 2 {
+                result.append(AnalysisTip(
+                    title: "Only one class rated so far",
+                    body: "The classifier needs samples from at least two different classes to learn to separate them. If the night was genuinely fully cloudy, open another ingested day and rate at least one clear or thin frame."
+                ))
+            } else if present < 4, coverage.totalRated > 200 {
+                result.append(AnalysisTip(
+                    title: "Class spread is narrow",
+                    body: "Only \(present) of 5 classes are represented. The classifier will work but won't tell apart the missing tiers. Aim for ≥ 30 samples in every class — especially 1 (full clouds) and 5 (clear) which are usually the rare ones."
+                ))
             }
-            let seen = coverage.classCounts.filter { $0 > 0 }.count
-            if seen < 2, coverage.totalRated > 0 {
-                result.append("Rate at least one frame of a second class so the classifier can learn to separate — e.g. set aside a known clear-sky night and key '5'.")
+            if coverage.totalRated >= 100 {
+                let minPopulated = coverage.classCounts.filter { $0 > 0 }.min() ?? 0
+                if minPopulated < 30 && present >= 2 {
+                    let labels = ["1", "2", "3", "4", "5"]
+                    let smallClasses = zip(labels, coverage.classCounts)
+                        .filter { $0.1 > 0 && $0.1 < 30 }
+                        .map { "\($0.0) (\($0.1))" }
+                        .joined(separator: ", ")
+                    result.append(AnalysisTip(
+                        title: "Thin tails — rate more of the rare classes",
+                        body: "Classes with <30 samples: \(smallClasses). With the inverse-frequency × 3× clear-sky boost they already over-influence training; more samples stabilise predictions. Toggle 'Only unrated' and look for frames that match those categories."
+                    ))
+                }
             }
         }
-        if classifier.summary != nil,
-           let coverage = classifier.lastCoverage,
-           coverage.totalRated < 200 {
-            result.append("< 200 human labels — predictions are still rough. Autonomous mode unlocks at 200+.")
+
+        // --- Training outcome -----------------------------------------
+
+        if let summary = classifier.summary {
+            let acc = summary.trainAccuracy
+            if acc < 0.4 {
+                result.append(AnalysisTip(
+                    title: "Training accuracy is low (\(Int(acc * 100))%)",
+                    body: "Near-random for 5 classes. Likely causes: (1) class distribution still very skewed, (2) the 3× clear-sky boost over-weights the rare classes and pushes the classifier to predict 4/5 too often, (3) thin tails in 1 or 5. Fix order: rate more of whichever class has the fewest samples, retrain, and check whether accuracy climbs."
+                ))
+            } else if acc < 0.6 {
+                result.append(AnalysisTip(
+                    title: "Classifier getting started (\(Int(acc * 100))%)",
+                    body: "Predictions are useful but not trustworthy yet. Scroll through the remaining unrated tiles with 'Only unrated' on — agree where the 🧠 badge matches, correct where it doesn't, and retrain after every 30-50 corrections."
+                ))
+            } else {
+                result.append(AnalysisTip(
+                    title: "Classifier in good shape (\(Int(acc * 100))% on \(summary.sampleCount) labels)",
+                    body: "Predictions on unrated frames should be plausible now. Toggle 'Only unrated' to see them — and if anything still looks weird, open the Classifier chip to retrain, or raise the minimum class coverage first."
+                ))
+            }
         }
+
+        // --- Autonomous-mode gate -------------------------------------
+
+        if let coverage = classifier.lastCoverage, coverage.totalRated < 200 {
+            result.append(AnalysisTip(
+                title: "Autonomous mode locked",
+                body: "Unlocks at ≥ 200 genuine human labels (you're at \(coverage.totalRated)). Once there, ⌘⇧A will hand the stream to the classifier — it labels, you just press A to confirm a page or a digit to override."
+            ))
+        }
+
         return result
     }
 }

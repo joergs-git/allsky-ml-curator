@@ -124,19 +124,15 @@ struct ContentView: View {
                     Task { await reload() }
                 }
 
-            HStack(spacing: 6) {
-                Text("Grid")
-                    .font(.caption)
-                    .foregroundStyle(AppColors.fgDim(nightMode))
-                Picker("", selection: $columns) {
-                    Text("4").tag(4)
-                    Text("6").tag(6)
-                    Text("8").tag(8)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 120)
-                .labelsHidden()
+            Picker("", selection: $columns) {
+                Text("4").tag(4)
+                Text("6").tag(6)
+                Text("8").tag(8)
             }
+            .pickerStyle(.segmented)
+            .frame(width: 120)
+            .labelsHidden()
+            .help("Matrix grid columns")
 
             Toggle("Night", isOn: $nightMode)
                 .toggleStyle(.switch)
