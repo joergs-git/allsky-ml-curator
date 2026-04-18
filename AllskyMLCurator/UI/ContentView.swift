@@ -353,6 +353,14 @@ struct ContentView: View {
 
     private var classifierPrimaryText: String {
         if let summary = classifier.summary {
+            // Prefer the honest CV number. Fall back to train
+            // accuracy only when CV couldn't be computed (e.g.
+            // < 10 samples in some class). This also hides the
+            // misleading "0%" that shows after restoreLatestModel,
+            // since restored summaries don't persist train accuracy.
+            if let cv = summary.cvAccuracy {
+                return "\(Int(cv * 100))%"
+            }
             return "\(Int(summary.trainAccuracy * 100))%"
         }
         if let coverage = classifier.lastCoverage,
