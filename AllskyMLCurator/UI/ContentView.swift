@@ -27,6 +27,8 @@ struct ContentView: View {
                 emptyState
             } else {
                 matrix
+                Divider()
+                keybindLegend
             }
         }
         .background(AppColors.bg(nightMode))
@@ -122,6 +124,80 @@ struct ContentView: View {
             onSelectionChange: { selectedIds = $0 },
             onMutation: { await reload() }
         )
+    }
+
+    private var keybindLegend: some View {
+        HStack(spacing: 8) {
+            legendRatingChip(key: "0", ratingClass: .unrated,   label: "unrated")
+            legendRatingChip(key: "1", ratingClass: .fullCloud, label: "full clouds")
+            legendRatingChip(key: "2", ratingClass: .mostly,    label: "mostly")
+            legendRatingChip(key: "3", ratingClass: .some,      label: "some clouds")
+            legendRatingChip(key: "4", ratingClass: .thin,      label: "thin / dust")
+            legendRatingChip(key: "5", ratingClass: .clear,     label: "clear")
+
+            Divider().frame(height: 18)
+
+            legendFlagChip(key: "R", color: AppColors.reflectionFlag(nightMode),
+                           label: "reflection (sun / moon on the dome)")
+            legendFlagChip(key: "T", color: AppColors.transitionalFlag(nightMode),
+                           label: "transitional (dusk / gain-settling garbage)")
+
+            Spacer()
+
+            Text("arrows nav · shift extends · ⌘A select all")
+                .font(.caption)
+                .foregroundStyle(AppColors.fgVeryDim(nightMode))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(AppColors.bgToolbar(nightMode))
+    }
+
+    private func legendRatingChip(
+        key: String, ratingClass: RatingClass, label: String
+    ) -> some View {
+        legendChip(
+            key: key,
+            keyBackground: ratingClass == .unrated
+                ? AppColors.bgControl(nightMode)
+                : AppColors.tier(ratingClass, night: nightMode),
+            keyForeground: ratingClass == .unrated
+                ? AppColors.fgDim(nightMode)
+                : Color.white,
+            label: label
+        )
+    }
+
+    private func legendFlagChip(
+        key: String, color: Color, label: String
+    ) -> some View {
+        legendChip(
+            key: key,
+            keyBackground: color,
+            keyForeground: .white,
+            label: label
+        )
+    }
+
+    private func legendChip(
+        key: String,
+        keyBackground: Color,
+        keyForeground: Color,
+        label: String
+    ) -> some View {
+        HStack(spacing: 5) {
+            Text(key)
+                .font(.system(size: 11, weight: .black, design: .monospaced))
+                .frame(minWidth: 18)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
+                .background(keyBackground)
+                .foregroundStyle(keyForeground)
+                .clipShape(RoundedRectangle(cornerRadius: 3))
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(AppColors.fgDim(nightMode))
+        }
     }
 
     private var emptyState: some View {

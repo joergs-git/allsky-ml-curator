@@ -55,45 +55,58 @@ enum AppColors {
 
     // MARK: - Rating tier colors
     //
-    // Applied as the tile border in the matrix view and as label badges.
-    // Night-mode variants reduce all hues to red so dark-adapted vision
-    // is preserved while still distinguishing classes by brightness.
+    // Applied as the entire tile padding/border in the matrix view —
+    // adjacent tiles of the same rating class visibly merge into a
+    // continuous color bar. Colors are deliberately saturated so a
+    // rated tile can't be missed at a glance. Night mode collapses
+    // them to red-spectrum brightness variants for dark-adapted vision.
 
     static func tier(_ ratingClass: RatingClass, night: Bool) -> Color {
         switch ratingClass {
         case .unrated:
-            return night ? Color(red: 0.2, green: 0, blue: 0)
-                         : Color(white: 0.5)
-        case .fullCloud:
-            return night ? Color(red: 0.3, green: 0, blue: 0)
-                         : Color(red: 0.8, green: 0.27, blue: 0.27)  // #CC4444
-        case .mostly:
-            return night ? Color(red: 0.45, green: 0, blue: 0)
-                         : Color(red: 0.87, green: 0.53, blue: 0.0)  // orange
-        case .some:
-            return night ? Color(red: 0.6, green: 0, blue: 0)
-                         : Color(red: 0.8, green: 0.8, blue: 0.0)    // yellow
-        case .thin:
+            // No hue — unrated tiles show transparent/neutral backing so
+            // rated ones pop against them.
+            return night ? Color(red: 0.05, green: 0, blue: 0)
+                         : Color(white: 0.18)
+        case .fullCloud:  // 1 — saturated red
+            return night ? Color(red: 0.40, green: 0, blue: 0)
+                         : Color(red: 0.95, green: 0.12, blue: 0.12)
+        case .mostly:    // 2 — bold orange
+            return night ? Color(red: 0.55, green: 0, blue: 0)
+                         : Color(red: 1.00, green: 0.55, blue: 0.05)
+        case .some:      // 3 — bright yellow
             return night ? Color(red: 0.75, green: 0, blue: 0)
-                         : Color(red: 0.27, green: 0.67, blue: 0.27) // green
-        case .clear:
-            return night ? Color(red: 0.9, green: 0, blue: 0)
-                         : Color(red: 0.13, green: 0.8, blue: 0.13)  // bright green
+                         : Color(red: 1.00, green: 0.87, blue: 0.00)
+        case .thin:      // 4 — teal (distinct hue from the green of .clear)
+            return night ? Color(red: 0.85, green: 0, blue: 0)
+                         : Color(red: 0.00, green: 0.78, blue: 0.73)
+        case .clear:     // 5 — bright green
+            return night ? Color(red: 1.00, green: 0, blue: 0)
+                         : Color(red: 0.00, green: 0.85, blue: 0.25)
         }
+    }
+
+    /// Selection highlight — a color that always contrasts with the
+    /// tier colors (iOS-style bright blue in standard mode, warm red-
+    /// orange at night). Used as the thick outline around a selected
+    /// tile in the matrix view.
+    static func selection(_ night: Bool) -> Color {
+        night ? Color(red: 1.0, green: 0.45, blue: 0.15)
+              : Color(red: 0.00, green: 0.48, blue: 1.00)
     }
 
     // MARK: - Orthogonal flag badges
 
     /// Reflection (`R`) halo / badge color.
     static func reflectionFlag(_ night: Bool) -> Color {
-        night ? Color(red: 0.7, green: 0.1, blue: 0)
-              : Color(red: 1.0, green: 0.6, blue: 0.0)  // amber
+        night ? Color(red: 0.85, green: 0.15, blue: 0)
+              : Color(red: 1.00, green: 0.55, blue: 0.00)  // amber
     }
 
     /// Transitional (`T`) badge color — gain-settling / twilight garbage.
     static func transitionalFlag(_ night: Bool) -> Color {
-        night ? Color(red: 0.5, green: 0.1, blue: 0.3)
-              : Color(red: 0.6, green: 0.4, blue: 0.8)  // dim violet
+        night ? Color(red: 0.65, green: 0.15, blue: 0.40)
+              : Color(red: 0.70, green: 0.35, blue: 0.95)  // bold violet
     }
 
     // MARK: - Predictions

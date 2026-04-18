@@ -32,8 +32,10 @@ struct MatrixView: View {
     @FocusState private var isFocused: Bool
 
     private var gridColumns: [GridItem] {
+        // Tight spacing so adjacent same-rating tiles visually merge
+        // their colored bands into a continuous bar.
         Array(
-            repeating: GridItem(.flexible(minimum: 80), spacing: 6),
+            repeating: GridItem(.flexible(minimum: 80), spacing: 2),
             count: columns
         )
     }
@@ -43,7 +45,7 @@ struct MatrixView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVGrid(columns: gridColumns, spacing: 6) {
+                LazyVGrid(columns: gridColumns, spacing: 2) {
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                         MatrixTileCell(
                             item: item,
@@ -56,7 +58,7 @@ struct MatrixView: View {
                         }
                     }
                 }
-                .padding(8)
+                .padding(4)
             }
             .focusable()
             .focused($isFocused)
