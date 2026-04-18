@@ -279,8 +279,18 @@ struct ContentView: View {
             )
         }
         .buttonStyle(.plain)
-        .help("Push unsynced labels to Supabase (⌘S)")
+        .help(syncHelpText)
         .keyboardShortcut("s", modifiers: .command)
+    }
+
+    /// Tooltip text for the sync gauge — surfaces the real failure
+    /// reason on hover so the user doesn't have to open the info
+    /// popover to see why Supabase refused a batch.
+    private var syncHelpText: String {
+        if case .failed(let message) = sync.status {
+            return "Sync failed: \(message)\nClick to retry (⌘S)"
+        }
+        return "Push unsynced labels to Supabase (⌘S)"
     }
 
     private var syncGaugeValue: Double {

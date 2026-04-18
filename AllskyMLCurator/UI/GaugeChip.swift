@@ -61,12 +61,16 @@ struct GaugeChip: View {
                     .font(.system(size: 15, weight: .heavy, design: .rounded))
                     .foregroundStyle(tint)
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .fixedSize(horizontal: true, vertical: false)
                 Text(secondaryText)
                     .font(.caption2)
                     .foregroundStyle(AppColors.fgDim(nightMode))
                     .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
-            .frame(minWidth: 82, alignment: .leading)
+            .frame(minWidth: 120, alignment: .leading)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)

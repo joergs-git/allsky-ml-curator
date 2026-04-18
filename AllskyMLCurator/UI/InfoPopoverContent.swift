@@ -72,6 +72,14 @@ struct InfoPopoverContent: View {
                     keyValueRow("Last push", at.formatted(date: .omitted, time: .shortened))
                     keyValueRow("Rows pushed", "\(count)")
                 }
+                if case .failed(let message) = sync.status {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 2)
+                }
             }
 
             if !hints.isEmpty {
