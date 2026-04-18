@@ -40,6 +40,13 @@ final class ThumbnailCache: @unchecked Sendable {
     /// ~50 KB HEIF per frame on disk.
     static let size: CGFloat = 512
 
+    /// Upper bound on concurrent decodes. Reading and JPEG-decoding a
+    /// 3552×3552 allsky frame from the SMB share is the bottleneck; at
+    /// 20+ simultaneous reads macOS starts queuing + the UI stalls
+    /// waiting for async results. Four keeps the SMB channel busy
+    /// without saturating it.
+    private static let maxConcurrentGenerations = 4
+
     private static var cacheDirectory: URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)
             .first!
@@ -68,7 +75,10 @@ final class ThumbnailCache: @unchecked Sendable {
 
     /// Generate (or re-use) the thumbnail. Safe to call concurrently
     /// from the UI layer — in-flight requests for the same path share
-    /// a single task so we don't regenerate the same HEIF twice.
+    /// a single task, and global concurrency is capped at
+    /// `maxConcurrentGenerations` so SwiftUI's LazyVGrid can fire
+    /// hundreds of `.task` blocks at once during a fast scroll
+    /// without saturating the SMB connection.
     func generate(for imagePath: String) async -> NSImage? {
         // Fast check before touching the generation lock.
         if let hit = cached(for: imagePath) { return hit }
@@ -80,6 +90,8 @@ final class ThumbnailCache: @unchecked Sendable {
 
         let task = Task.detached(priority: .utility) { [self] () -> NSImage? in
             defer { inflight.withLock { $0[key] = nil } }
+            await generationSemaphore.acquire()
+            defer { Task { await generationSemaphore.release() } }
             return await generateOnWorker(for: imagePath)
         }
         inflight.withLock { $0[key] = task }
@@ -158,6 +170,44 @@ final class ThumbnailCache: @unchecked Sendable {
     /// Deduplicates concurrent generation for the same path. Lock-
     /// protected dictionary from cache-key → in-flight task.
     private let inflight = Mutex<[String: Task<NSImage?, Never>]>(initial: [:])
+
+    /// Bounds the number of in-flight JPEG decodes so the SMB channel
+    /// doesn't get saturated during a fast scroll through thousands
+    /// of tiles.
+    private let generationSemaphore = AsyncSemaphore(limit: 4)
+}
+
+// MARK: - Async semaphore
+
+/// Lightweight async semaphore used to throttle concurrent thumbnail
+/// generations. Actor-isolated so acquire/release happen in a
+/// well-defined order with no data races.
+private actor AsyncSemaphore {
+    private let limit: Int
+    private var active: Int = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(limit: Int) { self.limit = limit }
+
+    func acquire() async {
+        if active < limit {
+            active += 1
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        if let next = waiters.first {
+            waiters.removeFirst()
+            next.resume()
+            // `active` stays — the slot moves from this task to the next
+        } else {
+            active -= 1
+        }
+    }
 }
 
 // MARK: - Tiny Mutex helper

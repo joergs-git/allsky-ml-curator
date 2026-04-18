@@ -149,7 +149,7 @@ struct ContentView: View {
                 .foregroundStyle(AppColors.fgVeryDim(nightMode))
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .padding(.vertical, 8)
         .background(AppColors.bgToolbar(nightMode))
     }
 
@@ -185,17 +185,17 @@ struct ContentView: View {
         keyForeground: Color,
         label: String
     ) -> some View {
-        HStack(spacing: 5) {
+        VStack(spacing: 3) {
             Text(key)
                 .font(.system(size: 11, weight: .black, design: .monospaced))
-                .frame(minWidth: 18)
-                .padding(.horizontal, 4)
+                .frame(minWidth: 20)
+                .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .background(keyBackground)
                 .foregroundStyle(keyForeground)
                 .clipShape(RoundedRectangle(cornerRadius: 3))
             Text(label)
-                .font(.caption)
+                .font(.system(size: 10))
                 .foregroundStyle(AppColors.fgDim(nightMode))
         }
     }
