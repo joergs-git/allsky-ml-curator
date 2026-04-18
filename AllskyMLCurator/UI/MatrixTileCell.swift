@@ -17,6 +17,10 @@ struct MatrixTileCell: View {
     /// True when this tile is where the arrow keys will move from next.
     /// Distinguishes the single "active" tile inside a multi-selection.
     let isCursor: Bool
+    /// Classifier output for this tile, if the model has been trained
+    /// and an embedding exists. Rendered as a ghost badge in the
+    /// top-right corner.
+    let prediction: ClassifierEngine.Prediction?
     let nightMode: Bool
 
     @State private var image: NSImage?
@@ -66,7 +70,11 @@ struct MatrixTileCell: View {
                             .padding(.top, bandWidth + 4)
                     }
                     Spacer()
-                    if hasTransitional {
+                    if let prediction, !isRated {
+                        predictionBadge(prediction)
+                            .padding(.trailing, bandWidth + 4)
+                            .padding(.top, bandWidth + 4)
+                    } else if hasTransitional {
                         flagBadge("T", color: AppColors.transitionalFlag(nightMode))
                             .padding(.trailing, bandWidth + 4)
                             .padding(.top, bandWidth + 4)
@@ -174,5 +182,29 @@ struct MatrixTileCell: View {
             .background(color)
             .clipShape(Capsule())
             .shadow(color: .black.opacity(0.5), radius: 1, y: 1)
+    }
+
+    /// Ghost badge showing the classifier's top pick for an unrated
+    /// frame. Only rendered when the tile has no human rating yet, so
+    /// the prediction never fights with a real rating's stars.
+    /// Appearance: "? N" with the tier color of class N and alpha
+    /// scaled by the classifier's confidence.
+    private func predictionBadge(
+        _ prediction: ClassifierEngine.Prediction
+    ) -> some View {
+        let alpha = max(0.35, min(1.0, Double(prediction.topProbability)))
+        let color = AppColors.tier(prediction.topClass, night: nightMode)
+        return HStack(spacing: 2) {
+            Image(systemName: "brain")
+                .font(.system(size: 8, weight: .black))
+            Text("\(prediction.topClass.rawValue)")
+                .font(.system(size: 12, weight: .black, design: .monospaced))
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+        .background(color.opacity(alpha))
+        .clipShape(Capsule())
+        .shadow(color: .black.opacity(0.5), radius: 1, y: 1)
     }
 }

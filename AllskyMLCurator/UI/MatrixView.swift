@@ -16,6 +16,9 @@ struct MatrixView: View {
     let items: [ImageLibrary.ImageListItem]
     let columns: Int
     let nightMode: Bool
+    /// Classifier predictions keyed by imageId — forwarded per tile
+    /// so a sweep over this dictionary is O(1) per row.
+    let predictions: [Int64: ClassifierEngine.Prediction]
 
     /// Called when the selection changes. Exposed so the outer
     /// ContentView can render a status bar showing "X of Y selected".
@@ -51,6 +54,7 @@ struct MatrixView: View {
                             item: item,
                             isSelected: selectedIds.contains(item.id),
                             isCursor: index == cursorIndex,
+                            prediction: predictions[item.id],
                             nightMode: nightMode
                         )
                         .id(item.id)
