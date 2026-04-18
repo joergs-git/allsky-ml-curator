@@ -51,6 +51,29 @@ final class AppSettings {
         set { defaults.set(newValue, forKey: Key.lastImageFormatRaw) }
     }
 
+    /// Active camera filter in the main matrix view. `nil` means
+    /// "show all cameras"; a raw value restricts to that `CameraType`.
+    /// Default on first launch is `"color"` so the dominant OSC feed
+    /// is isolated and monochrome frames don't muddy the grid until
+    /// the user asks for them.
+    var lastCameraFilterRaw: String? {
+        get {
+            if let stored = defaults.string(forKey: Key.lastCameraFilterRaw) {
+                return stored.isEmpty ? nil : stored
+            }
+            return CameraType.color.rawValue
+        }
+        set {
+            // Distinguish "explicitly set to All cameras" (empty
+            // string sentinel) from "never set" (nil → default).
+            if let new = newValue {
+                defaults.set(new, forKey: Key.lastCameraFilterRaw)
+            } else {
+                defaults.set("", forKey: Key.lastCameraFilterRaw)
+            }
+        }
+    }
+
     // MARK: - Allsky fisheye geometry (per camera type)
     //
     // Used by the Phase-2 SkyDiskMask to crop the circular sky area
@@ -136,6 +159,7 @@ final class AppSettings {
         static let lastFolder = "ingest.lastFolderPath"
         static let lastCameraTypeRaw = "ingest.lastCameraTypeRaw"
         static let lastImageFormatRaw = "ingest.lastImageFormatRaw"
+        static let lastCameraFilterRaw = "matrix.lastCameraFilterRaw"
         static let colorCenterX = "camera.color.centerXPx"
         static let colorCenterY = "camera.color.centerYPx"
         static let colorRadius  = "camera.color.radiusPx"
