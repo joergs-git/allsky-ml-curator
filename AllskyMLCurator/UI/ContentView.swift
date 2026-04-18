@@ -144,7 +144,7 @@ struct ContentView: View {
 
             Spacer()
 
-            Text("arrows nav · shift extends · ⌘A select all")
+            Text("arrows / page / home-end nav · shift extends · ⌘A select all")
                 .font(.caption)
                 .foregroundStyle(AppColors.fgVeryDim(nightMode))
         }

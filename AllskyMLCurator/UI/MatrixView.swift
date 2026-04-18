@@ -75,7 +75,10 @@ struct MatrixView: View {
             .onChange(of: items.map(\.id)) { _, _ in
                 pruneStaleSelection()
             }
-            .onKeyPress(phases: .down) { press in
+            .onKeyPress(phases: [.down, .repeat]) { press in
+                // Including .repeat makes arrow keys + page keys
+                // auto-advance while held down, matching the usual
+                // macOS scrolling behaviour.
                 handleKey(press, proxy: proxy)
             }
         }
@@ -113,11 +116,21 @@ struct MatrixView: View {
     private func handleKey(
         _ press: KeyPress, proxy: ScrollViewProxy
     ) -> KeyPress.Result {
+        let shift = press.modifiers.contains(.shift)
+        // A "page" is roughly five rows at the current column count —
+        // close enough to one screen at typical window sizes without
+        // measuring the scroll view.
+        let pageStep = max(columns, columns * 5)
+
         switch press.key {
-        case .leftArrow:       moveCursor(by: -1, extend: press.modifiers.contains(.shift), proxy: proxy); return .handled
-        case .rightArrow:      moveCursor(by: +1, extend: press.modifiers.contains(.shift), proxy: proxy); return .handled
-        case .upArrow:         moveCursor(by: -columns, extend: press.modifiers.contains(.shift), proxy: proxy); return .handled
-        case .downArrow:       moveCursor(by: +columns, extend: press.modifiers.contains(.shift), proxy: proxy); return .handled
+        case .leftArrow:   moveCursor(by: -1,         extend: shift, proxy: proxy); return .handled
+        case .rightArrow:  moveCursor(by: +1,         extend: shift, proxy: proxy); return .handled
+        case .upArrow:     moveCursor(by: -columns,   extend: shift, proxy: proxy); return .handled
+        case .downArrow:   moveCursor(by: +columns,   extend: shift, proxy: proxy); return .handled
+        case .pageUp:      moveCursor(by: -pageStep,  extend: shift, proxy: proxy); return .handled
+        case .pageDown:    moveCursor(by: +pageStep,  extend: shift, proxy: proxy); return .handled
+        case .home:        moveCursor(to: 0,                extend: shift, proxy: proxy); return .handled
+        case .end:         moveCursor(to: items.count - 1,  extend: shift, proxy: proxy); return .handled
         default: break
         }
 
@@ -148,7 +161,14 @@ struct MatrixView: View {
         by delta: Int, extend: Bool, proxy: ScrollViewProxy
     ) {
         guard !items.isEmpty else { return }
-        let newIndex = max(0, min(items.count - 1, cursorIndex + delta))
+        moveCursor(to: cursorIndex + delta, extend: extend, proxy: proxy)
+    }
+
+    private func moveCursor(
+        to targetIndex: Int, extend: Bool, proxy: ScrollViewProxy
+    ) {
+        guard !items.isEmpty else { return }
+        let newIndex = max(0, min(items.count - 1, targetIndex))
         cursorIndex = newIndex
         let targetId = items[newIndex].id
         if extend {

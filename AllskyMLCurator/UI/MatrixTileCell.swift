@@ -84,14 +84,14 @@ struct MatrixTileCell: View {
             }
 
             if isCursor {
-                // 0.5 s full-cycle pulse using TimelineView — opacity
+                // 1 s full-cycle pulse using TimelineView — opacity
                 // swings between 0.4 and 1.0 so the keyboard cursor is
                 // unmistakable even when the whole page is selected
                 // (Cmd+A) and every tile already wears a static
                 // selection outline.
                 TimelineView(.animation) { context in
                     let t = context.date.timeIntervalSinceReferenceDate
-                    let phase = 0.5 + 0.5 * sin(t * 4 * .pi)   // 2 Hz → 0.5 s cycle
+                    let phase = 0.5 + 0.5 * sin(t * 2 * .pi)   // 1 Hz → 1 s cycle
                     Rectangle()
                         .strokeBorder(
                             AppColors.selection(nightMode)
