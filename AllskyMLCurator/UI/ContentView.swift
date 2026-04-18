@@ -18,6 +18,7 @@ struct ContentView: View {
     @State private var nightMode: Bool = AppSettings.shared.nightMode
 
     @ObservedObject private var sync = SyncEngine.shared
+    @ObservedObject private var classifier = ClassifierEngine.shared
 
     /// Coverage of the Vision feature-print sidecar cache — refreshed
     /// periodically so the toolbar chip shows "embed X / Y" progress
@@ -113,6 +114,7 @@ struct ContentView: View {
                     AppSettings.shared.nightMode = new
                 }
 
+            classifierChip
             embeddingChip
             syncChip
 
@@ -121,6 +123,42 @@ struct ContentView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(AppColors.bgToolbar(nightMode))
+    }
+
+    /// Classifier chip — shows training status + current agreement
+    /// and a "Train" button (⌘T) that kicks off a fresh retrain on
+    /// every human label currently in the DB.
+    private var classifierChip: some View {
+        Button {
+            Task { await classifier.train() }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: classifier.isTraining ? "hourglass" : "sparkles")
+                    .foregroundStyle(
+                        classifier.isTraining ? Color.blue
+                        : (classifier.summary == nil
+                           ? AppColors.fgDim(nightMode)
+                           : Color.green)
+                    )
+                Text(classifierStatusText)
+                    .font(.caption)
+                    .foregroundStyle(classifier.lastError != nil
+                                     ? Color.red
+                                     : AppColors.fgDim(nightMode))
+            }
+        }
+        .buttonStyle(.plain)
+        .help(classifier.lastError ?? "Retrain classifier on every current human label (⌘T)")
+        .keyboardShortcut("t", modifiers: .command)
+        .disabled(classifier.isTraining)
+    }
+
+    private var classifierStatusText: String {
+        if classifier.isTraining { return "training…" }
+        if let error = classifier.lastError { return error }
+        guard let summary = classifier.summary else { return "untrained" }
+        let acc = Int(summary.trainAccuracy * 100)
+        return "\(summary.sampleCount) labels · \(acc)% train"
     }
 
     /// Embedding coverage — counts how many Vision feature-print
@@ -195,6 +233,7 @@ struct ContentView: View {
             items: items,
             columns: columns,
             nightMode: nightMode,
+            predictions: classifier.predictions,
             onSelectionChange: { selectedIds = $0 },
             onMutation: { await reload() }
         )
