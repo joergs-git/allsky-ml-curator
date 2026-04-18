@@ -19,9 +19,12 @@ import GRDB
 ///   2. `predict(image:)` rebuilds the feature vector for one frame
 ///      and returns per-class probabilities + the top pick.
 ///
-/// The weights aren't persisted across launches yet — Phase 5c will
-/// add that to `model_versions`. For now retraining is cheap enough
-/// that a fresh boot simply retrains on demand.
+/// Every successful `train()` snapshot is persisted to the local
+/// `model_versions` table (row keyed by a timestamped version string);
+/// on app launch `restoreLatestModel()` rehydrates the most recent row
+/// so predictions are warm immediately without a fresh retrain. The
+/// blob format is a compact little-endian dump — magic, featureDim,
+/// numClasses, weights, bias — decoded in `decodeWeights(_:)`.
 @MainActor
 final class ClassifierEngine: ObservableObject {
 
@@ -230,10 +233,48 @@ final class ClassifierEngine: ObservableObject {
             )
 
             await recomputeAllPredictions()
+            await persistTrainedModel()
         } catch {
             lastError = (error as? LocalizedError)?.errorDescription
                 ?? String(describing: error)
         }
+    }
+
+    /// Restore the most recently trained classifier from the local DB
+    /// so predictions are available immediately on app launch. Silent
+    /// when the table is empty or the blob header doesn't match.
+    func restoreLatestModel() async {
+        let reader = Database.shared.reader
+        let row = try? await reader.read { db in
+            try ModelVersionRecord
+                .order(Column("trainedAt").desc)
+                .fetchOne(db)
+        }
+        guard let row else { return }
+        guard let decoded = Self.decodeWeights(row.classifierWeights) else {
+            // Either an older blob shape from a previous dev build or a
+            // corrupt row. Leaving the in-memory state untrained means
+            // the toolbar chip will still report "untrained" — the
+            // curator can retrain with ⌘T.
+            return
+        }
+        weights = decoded.weights
+        bias = decoded.bias
+        featureDim = decoded.featureDim
+
+        summary = TrainingSummary(
+            trainedAt: row.trainedAt,
+            sampleCount: row.trainingSetSize,
+            classCounts: row.classCounts,
+            finalLoss: 0,           // not persisted
+            trainAccuracy: 0,       // not persisted
+            cvAccuracy: row.accuracy5FoldCV.map(Float.init),
+            confusionMatrix: nil,   // not persisted
+            classMetrics: nil,      // not persisted
+            durationSeconds: 0
+        )
+
+        await recomputeAllPredictions()
     }
 
     /// Predict for a single image. Returns `nil` when the classifier
@@ -861,5 +902,129 @@ final class ClassifierEngine: ObservableObject {
             topClass: topClass,
             topProbability: bestProb
         )
+    }
+
+    // MARK: - Persistence
+
+    /// Compact little-endian blob header: 4 bytes magic, 1 byte format
+    /// version, 3 bytes reserved, Int32 featureDim, Int32 numClasses —
+    /// then featureDim×numClasses row-major Float32 weights and
+    /// numClasses Float32 biases.
+    private static let weightsMagic: [UInt8] = [0x43, 0x4D, 0x4C, 0x57] // "CMLW"
+    private static let weightsFormatVersion: UInt8 = 1
+    private static let weightsHeaderSize = 16
+
+    /// Persist the freshly-trained weights as a new `model_versions`
+    /// row. Called from `train()` after `summary` is set so the stored
+    /// row carries the exact CV accuracy the UI surfaces. Skipped when
+    /// the in-memory state is empty (guard against a race where
+    /// training failed mid-way).
+    private func persistTrainedModel() async {
+        guard !weights.isEmpty, !bias.isEmpty, featureDim > 0,
+              let summary else { return }
+
+        let blob = Self.encodeWeights(
+            featureDim: featureDim,
+            numClasses: numClasses,
+            weights: weights,
+            bias: bias
+        )
+
+        // Version string: ISO-8601 without separators + sample count —
+        // chronologically sortable, unique across rapid consecutive
+        // trains, and self-describing when scanning the table.
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        let versionString = "v\(formatter.string(from: summary.trainedAt))-\(summary.sampleCount)"
+
+        let record = ModelVersionRecord(
+            version: versionString,
+            trainedAt: summary.trainedAt,
+            trainingSetSize: summary.sampleCount,
+            classCounts: summary.classCounts,
+            classifierType: .logreg,
+            classifierWeights: blob,
+            accuracy5FoldCV: summary.cvAccuracy.map(Double.init),
+            notes: nil
+        )
+
+        do {
+            try await Database.shared.writer.write { db in
+                try record.insert(db)
+            }
+        } catch {
+            // Non-fatal: the in-memory model still works for this
+            // session, the user just loses the restored-on-launch
+            // benefit. Surface nothing noisy — error chip is reserved
+            // for training failures.
+        }
+    }
+
+    /// Serialize weights + bias into the `CMLW v1` blob format.
+    static func encodeWeights(
+        featureDim: Int, numClasses: Int,
+        weights: [Float], bias: [Float]
+    ) -> Data {
+        var data = Data()
+        data.reserveCapacity(
+            weightsHeaderSize + (weights.count + bias.count) * 4
+        )
+        data.append(contentsOf: weightsMagic)
+        data.append(weightsFormatVersion)
+        data.append(contentsOf: [0, 0, 0])          // reserved
+        var fd = Int32(featureDim).littleEndian
+        var nc = Int32(numClasses).littleEndian
+        withUnsafeBytes(of: &fd) { data.append(contentsOf: $0) }
+        withUnsafeBytes(of: &nc) { data.append(contentsOf: $0) }
+        weights.withUnsafeBufferPointer { buf in
+            data.append(UnsafeBufferPointer(start: buf.baseAddress, count: buf.count))
+        }
+        bias.withUnsafeBufferPointer { buf in
+            data.append(UnsafeBufferPointer(start: buf.baseAddress, count: buf.count))
+        }
+        return data
+    }
+
+    /// Decode a `CMLW v1` blob. Returns `nil` on magic mismatch, size
+    /// mismatch, or any trailing bytes that don't match the declared
+    /// featureDim × numClasses layout.
+    static func decodeWeights(_ data: Data) -> (
+        featureDim: Int, numClasses: Int,
+        weights: [Float], bias: [Float]
+    )? {
+        guard data.count >= weightsHeaderSize else { return nil }
+        let magic = Array(data.prefix(4))
+        guard magic == weightsMagic else { return nil }
+        guard data[4] == weightsFormatVersion else { return nil }
+
+        let fd = data.subdata(in: 8..<12).withUnsafeBytes {
+            Int32(littleEndian: $0.load(as: Int32.self))
+        }
+        let nc = data.subdata(in: 12..<16).withUnsafeBytes {
+            Int32(littleEndian: $0.load(as: Int32.self))
+        }
+        let featureDim = Int(fd)
+        let numClasses = Int(nc)
+        guard featureDim > 0, numClasses > 0 else { return nil }
+
+        let weightsCount = featureDim * numClasses
+        let biasCount = numClasses
+        let expectedSize = weightsHeaderSize + (weightsCount + biasCount) * 4
+        guard data.count == expectedSize else { return nil }
+
+        let weightsStart = weightsHeaderSize
+        let weightsEnd = weightsStart + weightsCount * 4
+        let biasStart = weightsEnd
+        let biasEnd = biasStart + biasCount * 4
+
+        let weights = data.subdata(in: weightsStart..<weightsEnd).withUnsafeBytes { raw -> [Float] in
+            let buf = raw.bindMemory(to: Float.self)
+            return Array(buf)
+        }
+        let bias = data.subdata(in: biasStart..<biasEnd).withUnsafeBytes { raw -> [Float] in
+            let buf = raw.bindMemory(to: Float.self)
+            return Array(buf)
+        }
+        return (featureDim, numClasses, weights, bias)
     }
 }

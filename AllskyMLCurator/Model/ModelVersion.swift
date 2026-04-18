@@ -40,4 +40,25 @@ extension ModelVersionRecord: FetchableRecord, PersistableRecord {
         container["accuracy5FoldCV"] = accuracy5FoldCV
         container["notes"] = notes
     }
+
+    /// Custom row decoder — `classCounts` lives in SQLite as JSON-encoded
+    /// blob, which the Codable default path can't parse back to `[Int]`.
+    init(row: Row) throws {
+        self.version = row["version"]
+        self.trainedAt = row["trainedAt"]
+        self.trainingSetSize = row["trainingSetSize"]
+
+        let countsBlob: Data = row["classCounts"] ?? Data()
+        if let decoded = try? JSONSerialization.jsonObject(with: countsBlob) as? [Int] {
+            self.classCounts = decoded
+        } else {
+            self.classCounts = []
+        }
+
+        let typeRaw: String = row["classifierType"] ?? "logreg"
+        self.classifierType = ClassifierType(rawValue: typeRaw) ?? .logreg
+        self.classifierWeights = row["classifierWeights"] ?? Data()
+        self.accuracy5FoldCV = row["accuracy5FoldCV"]
+        self.notes = row["notes"]
+    }
 }
