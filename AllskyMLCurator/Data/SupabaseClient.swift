@@ -99,13 +99,20 @@ final class SupabaseClient {
     /// Subset of `cloudwatcher_readings` relevant to the curator. Only
     /// the columns we consume are declared; Supabase's `?select=` uses
     /// this list so we don't drag the full row over the wire.
+    ///
+    /// Column names mirror the live astro-weather schema: `sky_quality_raw`
+    /// (0 = cloudy, 1 = clear — see the CloudWatcher K-factor classifier)
+    /// and `sky_minus_ambient` (more negative = clearer sky). The earlier
+    /// draft referenced a non-existent `clouds_safe` column and Supabase
+    /// responded with HTTP 400 / code 42703.
     struct CloudwatcherReading: Decodable, Identifiable, Sendable {
         let id: Int64
         let timestamp: Date
         let skyTemperature: Double?
         let ambientTemperature: Double?
+        let skyMinusAmbient: Double?
+        let skyQualityRaw: Int?
         let humidity: Double?
-        let cloudsSafe: Int?
         let allskyUrl: String?
         let zwoUrl: String?
         let zwoFitsUrl: String?
@@ -113,10 +120,11 @@ final class SupabaseClient {
         enum CodingKeys: String, CodingKey {
             case id
             case timestamp
-            case skyTemperature    = "sky_temperature"
+            case skyTemperature     = "sky_temperature"
             case ambientTemperature = "ambient_temperature"
+            case skyMinusAmbient    = "sky_minus_ambient"
+            case skyQualityRaw      = "sky_quality_raw"
             case humidity
-            case cloudsSafe         = "clouds_safe"
             case allskyUrl          = "allsky_url"
             case zwoUrl             = "zwo_url"
             case zwoFitsUrl         = "zwo_fits_url"
@@ -173,7 +181,7 @@ final class SupabaseClient {
             path: "/rest/v1/cloudwatcher_readings",
             query: [
                 URLQueryItem(name: "select", value:
-                    "id,timestamp,sky_temperature,ambient_temperature,humidity,clouds_safe,allsky_url,zwo_url,zwo_fits_url"),
+                    "id,timestamp,sky_temperature,ambient_temperature,sky_minus_ambient,sky_quality_raw,humidity,allsky_url,zwo_url,zwo_fits_url"),
                 URLQueryItem(name: "timestamp", value: "gte.\(iso.string(from: from))"),
                 URLQueryItem(name: "timestamp", value: "lt.\(iso.string(from: to))"),
                 URLQueryItem(name: "or", value:
