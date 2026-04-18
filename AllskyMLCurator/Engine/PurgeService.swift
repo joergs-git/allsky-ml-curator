@@ -17,6 +17,7 @@ enum PurgeService {
         case classifierModel
         case embeddings
         case thumbnails
+        case badVolumePaths
         case imagesAndCaches
         case everything
 
@@ -28,6 +29,7 @@ enum PurgeService {
             case .classifierModel:  return "Trained classifier"
             case .embeddings:       return "Vision embeddings cache"
             case .thumbnails:       return "Thumbnail cache"
+            case .badVolumePaths:   return "Repair /volume1 path prefixes"
             case .imagesAndCaches:  return "Image index + all caches"
             case .everything:       return "Everything (full fresh start)"
             }
@@ -44,6 +46,8 @@ enum PurgeService {
                 return "Removes all cached Vision FeaturePrint sidecars under Library/Caches/AllskyMLCurator/embeddings. The launch-time warmer will rebuild them next session."
             case .thumbnails:
                 return "Removes all cached HEIF tile thumbnails. The matrix regenerates them on scroll — first pass will be slow, second session fast again."
+            case .badVolumePaths:
+                return "Rewrite any image-row filePath that starts with the Synology-internal `/volume1/...` prefix to the local SMB mount `/Volumes/...`. Labels and Supabase rows survive; only the filePath column is touched. Use after an early weather-ingest run that stored the un-remapped prefix."
             case .imagesAndCaches:
                 return "Clears the `images` table (with every label / prediction row cascading), plus the thumbnail and embedding caches. Re-ingest with ⌘O to rebuild the index. Your Supabase ratings survive — only the local index resets."
             case .everything:
@@ -62,6 +66,7 @@ enum PurgeService {
             case .classifierModel:  return try await purgeClassifier()
             case .embeddings:       return purgeDiskCache(at: "embeddings")
             case .thumbnails:       return purgeDiskCache(at: "thumbnails")
+            case .badVolumePaths:   return try await repairVolumePaths()
             case .imagesAndCaches:  return try await purgeImagesAndCaches()
             case .everything:       return try await purgeEverything()
             }
@@ -122,6 +127,24 @@ enum PurgeService {
         let thumbs = purgeDiskCache(at: "thumbnails")
         let embs = purgeDiskCache(at: "embeddings")
         return "Wiped index — \(totals.0) labels, \(totals.1) predictions, \(totals.2) model versions, \(totals.3) image rows. \(thumbs). \(embs)."
+    }
+
+    /// Rewrite every `images.filePath` that starts with `/volume1/`
+    /// to the local SMB mount's `/Volumes/` prefix. No rows are
+    /// deleted — only paths are patched. Labels and predictions
+    /// keep their FK so the classifier's training set survives.
+    @MainActor
+    private static func repairVolumePaths() async throws -> String {
+        let writer = Database.shared.writer
+        let patched = try await writer.write { db -> Int in
+            try db.execute(sql: """
+                UPDATE images
+                SET filePath = '/Volumes/' || SUBSTR(filePath, 10)
+                WHERE filePath LIKE '/volume1/%'
+                """)
+            return db.changesCount
+        }
+        return "Repaired \(patched) image row(s) with a /volume1/... filePath prefix."
     }
 
     /// Delete every file in `~/Library/Caches/AllskyMLCurator/<subdir>`

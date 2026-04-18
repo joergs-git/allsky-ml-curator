@@ -314,16 +314,41 @@ struct WeatherIngestSheet: View {
         }
     }
 
-    /// Pick the right URL column per camera pick. Returns nil when
-    /// the requested column is null (e.g. no mono JPG for a daytime
-    /// reading).
+    /// Pick the right URL column per camera + rewrite Synology's
+    /// internal `/volume1/...` prefix to the local SMB mount's
+    /// `/Volumes/...`. Returns nil when the requested column is null
+    /// (e.g. no color JPG for a daytime reading before the ZWO was
+    /// installed).
+    ///
+    /// Column mapping for the Rheine setup:
+    ///   - `zwo_url`        → color (ZWO ASI676MC, the OSC cam)
+    ///   - `zwo_fits_url`   → color FITS from the same cam
+    ///   - `allsky_url`     → mono  (SX CCD SuperStar, the night cam)
+    ///
+    /// The historical CLAUDE.md assumption was the opposite
+    /// ("allsky = color, zwo = mono"), which reflects a generic
+    /// reading of those column names — for this user's physical
+    /// rig the zwo hardware is the colour cam and the allsky label
+    /// belongs to the SX mono sensor. Verified against existing
+    /// image-row paths in the local DB.
     private func urlForReading(
         _ reading: SupabaseClient.CloudwatcherReading, camera: CameraType
     ) -> String? {
+        let raw: String?
         switch camera {
-        case .color:      return reading.allskyUrl
-        case .monochrome: return reading.zwoUrl ?? reading.zwoFitsUrl
+        case .color:      raw = reading.zwoUrl ?? reading.zwoFitsUrl
+        case .monochrome: raw = reading.allskyUrl
         }
+        return raw.map(Self.remapVolumePrefix)
+    }
+
+    /// Synology exposes files internally at `/volume1/<share>/...`
+    /// but macOS mounts the SMB share at `/Volumes/<share>/...`. The
+    /// two differ only in the prefix. A simple string replace keeps
+    /// every downstream path operation sandbox-safe.
+    static func remapVolumePrefix(_ path: String) -> String {
+        guard path.hasPrefix("/volume1/") else { return path }
+        return "/Volumes/" + path.dropFirst("/volume1/".count)
     }
 
     // MARK: - Ingest actions
