@@ -231,18 +231,19 @@ struct MatrixView: View {
         cursorIndex = newIndex
         let targetId = items[newIndex].id
         if extend {
-            // Shift+navigation — extend from the stable anchor to
-            // the new cursor. Anchor is deliberately NOT touched so
-            // the user can scroll around with arrows / PageDown and
-            // later shift-click back from the pre-scroll position.
+            // Shift+navigation — extend from the anchor to the new
+            // cursor. Anchor stays where it is so repeated Shift+arrow
+            // presses grow/shrink the same block.
             selectedIds = rowAlignedSelection(
                 fromAnchor: selectionAnchor, toCursor: newIndex
             )
         } else {
-            // Plain navigation — single-tile selection. Anchor stays
-            // where it was (standard macOS behaviour): a later
-            // shift-click still extends from the original pick.
+            // Plain navigation — collapse to a single tile AND move
+            // the anchor with the cursor (classical Finder / Excel
+            // behaviour). Without this the anchor goes stale and the
+            // next Shift+arrow extends from the wrong origin.
             selectedIds = [targetId]
+            selectionAnchor = newIndex
         }
         onSelectionChange(selectedIds)
         withAnimation(.easeOut(duration: 0.15)) {
