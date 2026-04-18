@@ -142,6 +142,50 @@ final class ImageLibrary: ObservableObject {
         Task { await SyncEngine.shared.pushPending() }
     }
 
+    /// Apply a provisional machine rating (`source='auto'`) to every
+    /// image id — used by the autonomous rater. The previous active
+    /// label, if any, is demoted to `isCurrent=false`; a future manual
+    /// rating from the curator will override. Never used to overwrite
+    /// an existing human rating — the caller is expected to filter to
+    /// unrated frames before calling.
+    func setAutoRating(
+        _ ratingClass: RatingClass,
+        forImageIds imageIds: [Int64]
+    ) async {
+        await withDB { db in
+            for imageId in imageIds {
+                let previous = try LabelRecord
+                    .filter(Column("imageId") == imageId)
+                    .filter(Column("isCurrent") == true)
+                    .fetchOne(db)
+                if var prev = previous {
+                    prev.isCurrent = false
+                    try prev.update(db)
+                }
+                var label = LabelRecord.auto(
+                    imageId: imageId,
+                    ratingClass: ratingClass
+                )
+                try label.insert(db)
+            }
+        }
+        Task { await SyncEngine.shared.pushPending() }
+    }
+
+    /// Count of human-sourced, non-unrated, currently-active labels —
+    /// feeds the autonomous-mode gate (the 200-label minimum guards
+    /// against confirmation bias on a freshly seeded classifier).
+    func humanLabelCount() async -> Int {
+        let reader = Database.shared.reader
+        return (try? await reader.read { db in
+            try LabelRecord
+                .filter(Column("isCurrent") == true)
+                .filter(Column("source") == "human")
+                .filter(Column("ratingClass") != RatingClass.unrated.rawValue)
+                .fetchCount(db)
+        }) ?? 0
+    }
+
     /// Toggle the reflection (`R`) flag on one or more images. If the
     /// image has no active label yet, a fresh one is created with
     /// class=unrated + reflection_flag=true. Triggers a background
