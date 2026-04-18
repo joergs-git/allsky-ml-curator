@@ -44,50 +44,52 @@ struct MatrixTileCell: View {
     private var bandWidth: CGFloat { isRated ? 6 : 1 }
 
     var body: some View {
-        GeometryReader { proxy in
-            ZStack {
-                backgroundFill
+        // `GeometryReader` inside each cell used to drive LazyVGrid into
+        // very slow layout convergence at a few thousand items (the
+        // visible scroll would stall at ~1000 frames while SwiftUI kept
+        // re-measuring). Plain ZStack + aspectRatio is measured once
+        // per column-width and scales to thousands of tiles cleanly.
+        ZStack {
+            backgroundFill
 
-                thumbnailLayer
-                    .padding(bandWidth)
+            thumbnailLayer
+                .padding(bandWidth)
 
-                VStack {
-                    HStack(alignment: .top) {
-                        if isRated {
-                            starsBadge
-                                .padding(.leading, bandWidth + 4)
-                                .padding(.top, bandWidth + 4)
-                        }
-                        Spacer()
-                        if hasTransitional {
-                            flagBadge("T", color: AppColors.transitionalFlag(nightMode))
-                                .padding(.trailing, bandWidth + 4)
-                                .padding(.top, bandWidth + 4)
-                        }
+            VStack {
+                HStack(alignment: .top) {
+                    if isRated {
+                        starsBadge
+                            .padding(.leading, bandWidth + 4)
+                            .padding(.top, bandWidth + 4)
                     }
                     Spacer()
-                    if hasReflection {
-                        HStack {
-                            Spacer()
-                            flagBadge("R", color: AppColors.reflectionFlag(nightMode))
-                                .padding(.trailing, bandWidth + 4)
-                                .padding(.bottom, bandWidth + 4)
-                        }
+                    if hasTransitional {
+                        flagBadge("T", color: AppColors.transitionalFlag(nightMode))
+                            .padding(.trailing, bandWidth + 4)
+                            .padding(.top, bandWidth + 4)
                     }
                 }
-
-                if isSelected {
-                    Rectangle()
-                        .strokeBorder(
-                            AppColors.selection(nightMode),
-                            lineWidth: 4
-                        )
+                Spacer()
+                if hasReflection {
+                    HStack {
+                        Spacer()
+                        flagBadge("R", color: AppColors.reflectionFlag(nightMode))
+                            .padding(.trailing, bandWidth + 4)
+                            .padding(.bottom, bandWidth + 4)
+                    }
                 }
             }
-            .frame(width: proxy.size.width, height: proxy.size.width)
+
+            if isSelected {
+                Rectangle()
+                    .strokeBorder(
+                        AppColors.selection(nightMode),
+                        lineWidth: 4
+                    )
+            }
         }
         .aspectRatio(1, contentMode: .fit)
-        .task {
+        .task(id: item.image.filePath) {
             image = await ThumbnailCache.shared.generate(for: item.image.filePath)
         }
     }
