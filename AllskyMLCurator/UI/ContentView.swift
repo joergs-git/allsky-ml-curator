@@ -536,6 +536,8 @@ struct ContentView: View {
 
             Spacer()
 
+            selectionCountChip
+
             Text("arrows / page / home-end nav · shift extends · ⌘A select all · Enter inspects")
                 .font(.caption)
                 .foregroundStyle(AppColors.fgVeryDim(nightMode))
@@ -543,6 +545,31 @@ struct ContentView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(AppColors.bgToolbar(nightMode))
+    }
+
+    /// "N of M selected" readout so the curator knows how many tiles
+    /// a 0-5 / R / T keystroke would hit. Hidden when nothing is
+    /// selected — an empty state would just be visual noise.
+    private var selectionCountChip: some View {
+        let count = selectedIds.count
+        return Group {
+            if count > 0 {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.square.fill")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(AppColors.selection(nightMode))
+                    Text("\(count) of \(items.count) selected")
+                        .font(.caption.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(AppColors.fg(nightMode))
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(
+                    Capsule().fill(AppColors.bgControl(nightMode))
+                )
+                .padding(.trailing, 8)
+            }
+        }
     }
 
     private func legendRatingChip(

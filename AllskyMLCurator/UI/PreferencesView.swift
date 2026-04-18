@@ -43,6 +43,9 @@ struct PreferencesView: View {
     @State private var purgeConfirmScope: PurgeService.Scope?
     @State private var purgeStatus: String = ""
     @State private var isPurging: Bool = false
+    @State private var isRebuildingThumbnails: Bool = false
+    @State private var rebuildProgress: ThumbnailCache.RebuildProgress?
+    @State private var rebuildTask: Task<Void, Never>?
 
     // MARK: - Supabase state
 
@@ -427,6 +430,39 @@ struct PreferencesView: View {
                 .padding(.vertical, 4)
             }
 
+            Section("Thumbnail repair") {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Rebuild missing thumbnails")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Walks every image in the local index and regenerates any thumbnail whose HEIC sidecar isn't on disk under the current camera geometry + crop fraction. Fixes the 'chunk gap' symptom where changing Preferences → Camera leaves the matrix with spinners for part of the library.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let p = rebuildProgress {
+                            ProgressView(value: p.fraction)
+                                .progressViewStyle(.linear)
+                                .padding(.top, 4)
+                            Text("\(p.done) of \(p.total) — \(p.regenerated) regenerated, \(p.skipped) already on disk")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    if isRebuildingThumbnails {
+                        Button("Cancel") {
+                            rebuildTask?.cancel()
+                        }
+                    } else {
+                        Button("Rebuild…") {
+                            startThumbnailRebuild()
+                        }
+                        .disabled(isPurging)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+
             Section("Fresh start") {
                 Text("These actions are destructive. Use only when you want to wipe state and restart from scratch — e.g. after a schema change or a bad ingest run. Supabase rows and the Keychain (Supabase URL / key) are preserved.")
                     .font(.caption)
@@ -484,6 +520,23 @@ struct PreferencesView: View {
             let summary = await PurgeService.purge(scope)
             purgeStatus = summary
             isPurging = false
+        }
+    }
+
+    private func startThumbnailRebuild() {
+        guard !isRebuildingThumbnails else { return }
+        isRebuildingThumbnails = true
+        rebuildProgress = ThumbnailCache.RebuildProgress(
+            done: 0, total: 0, regenerated: 0, skipped: 0
+        )
+        rebuildTask = Task {
+            await ThumbnailCache.shared.rebuildMissing { snapshot in
+                Task { @MainActor in rebuildProgress = snapshot }
+            }
+            await MainActor.run {
+                isRebuildingThumbnails = false
+                rebuildTask = nil
+            }
         }
     }
 

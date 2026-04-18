@@ -1,6 +1,7 @@
 import AppKit
 import CryptoKit
 import Foundation
+import GRDB
 import ImageIO
 import UniformTypeIdentifiers
 
@@ -239,6 +240,65 @@ final class ThumbnailCache: @unchecked Sendable {
             in: CGRect(x: 0, y: 0, width: side, height: side)
         )
         return context.makeImage()
+    }
+
+    // MARK: - Rebuild helper
+
+    /// Progress snapshot for the rebuild-missing walker. `regenerated`
+    /// counts files newly written this run; `skipped` counts files
+    /// already on disk.
+    struct RebuildProgress: Equatable, Sendable {
+        var done: Int
+        var total: Int
+        var regenerated: Int
+        var skipped: Int
+        var fraction: Double { total > 0 ? Double(done) / Double(total) : 0 }
+    }
+
+    /// Rebuild every thumbnail whose HEIC sidecar isn't on disk under
+    /// the current cacheKey (fisheye geometry + crop fraction). Fixes
+    /// the "chunk gap" symptom where changing Preferences → Camera
+    /// invalidates a subset of cache keys and scroll shows stuck
+    /// spinners for tiles in the affected range. `onProgress` fires
+    /// after every 10 frames so the caller can drive a progress bar
+    /// without an update per tile.
+    func rebuildMissing(
+        onProgress: @Sendable @escaping (RebuildProgress) -> Void
+    ) async {
+        let images = (try? await Database.shared.reader.read { db in
+            try ImageRecord
+                .filter(ImageRecord.Columns.isExcluded == false)
+                .order(ImageRecord.Columns.captureUtc.asc)
+                .fetchAll(db)
+        }) ?? []
+        let total = images.count
+        var done = 0
+        var regenerated = 0
+        var skipped = 0
+
+        for image in images {
+            if Task.isCancelled { return }
+            let url = diskURL(
+                for: image.filePath,
+                cameraType: image.cameraSource.cameraType
+            )
+            if FileManager.default.fileExists(atPath: url.path) {
+                skipped += 1
+            } else {
+                _ = await generate(
+                    for: image.filePath,
+                    cameraType: image.cameraSource.cameraType
+                )
+                regenerated += 1
+            }
+            done += 1
+            if done.isMultiple(of: 10) || done == total {
+                onProgress(RebuildProgress(
+                    done: done, total: total,
+                    regenerated: regenerated, skipped: skipped
+                ))
+            }
+        }
     }
 
     // MARK: - Cache key + paths
