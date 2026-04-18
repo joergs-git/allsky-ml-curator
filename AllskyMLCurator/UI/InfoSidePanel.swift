@@ -135,15 +135,15 @@ struct InfoSidePanel: View {
                 }
             }
             .frame(width: 96, alignment: .leading)
-            VStack(alignment: .leading, spacing: 0) {
+            (
                 Text(cls.shortName)
                     .font(.caption)
-                    .foregroundStyle(AppColors.fgDim(nightMode))
-                    .lineLimit(1)
-                Text(cls.coverageHint)
+                    .foregroundColor(AppColors.fgDim(nightMode))
+                + Text(" (\(cls.coverageHint))")
                     .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(AppColors.fgVeryDim(nightMode))
-            }
+                    .foregroundColor(AppColors.fgVeryDim(nightMode))
+            )
+            .lineLimit(1)
             Spacer()
             Text("\(count)")
                 .font(.system(.body, design: .rounded).weight(.bold))
