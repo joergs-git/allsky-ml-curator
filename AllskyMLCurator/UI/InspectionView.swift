@@ -24,6 +24,10 @@ struct InspectionView: View {
     let onMutation: () async -> Void
     let onDismiss: () -> Void
 
+    /// Confidence arm mirrored from the matrix: `q` / `c` prefixes the
+    /// very next digit with a quick / certain confidence annotation.
+    @State private var pendingConfidence: Int?
+
     // MARK: - Body
 
     var body: some View {
@@ -275,6 +279,16 @@ struct InspectionView: View {
     // MARK: - Keyboard
 
     private func handleKey(_ press: KeyPress) -> KeyPress.Result {
+        // Esc while a confidence prefix is armed cancels the arm;
+        // otherwise it closes the inspection sheet. Same ergonomic as
+        // the matrix view.
+        if press.key == .escape, pendingConfidence != nil {
+            withAnimation(.easeInOut(duration: 0.12)) {
+                pendingConfidence = nil
+            }
+            return .handled
+        }
+
         switch press.key {
         case .leftArrow:
             if index > 0 { index -= 1 }
@@ -311,13 +325,31 @@ struct InspectionView: View {
                 await onMutation()
             }
             return .handled
+        case "q", "Q":
+            withAnimation(.easeInOut(duration: 0.12)) {
+                pendingConfidence = (pendingConfidence == 1) ? nil : 1
+            }
+            return .handled
+        case "c", "C":
+            withAnimation(.easeInOut(duration: 0.12)) {
+                pendingConfidence = (pendingConfidence == 3) ? nil : 3
+            }
+            return .handled
         default: return .ignored
         }
     }
 
     private func applyRating(_ cls: RatingClass, to id: Int64) {
+        let confidence = pendingConfidence
+        if pendingConfidence != nil {
+            withAnimation(.easeInOut(duration: 0.12)) {
+                pendingConfidence = nil
+            }
+        }
         Task {
-            await ImageLibrary.shared.setRating(cls, forImageIds: [id])
+            await ImageLibrary.shared.setRating(
+                cls, forImageIds: [id], confidence: confidence
+            )
             await onMutation()
         }
     }
