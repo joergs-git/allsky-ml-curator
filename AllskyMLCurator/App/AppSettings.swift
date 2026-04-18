@@ -149,6 +149,32 @@ final class AppSettings {
         set { defaults.set(newValue, forKey: Key.monoFov) }
     }
 
+    // MARK: - Camera orientation (compass calibration)
+    //
+    // One-time rotation offset per camera so that compass azimuth can
+    // be translated back into a pixel direction on the fisheye image.
+    // Zero means "true north is straight up in the frame" — the case
+    // for a perfectly aligned rig. Any deviation from that is stored
+    // in degrees: positive rotates clockwise (viewed as printed on
+    // screen), so a value of 90° means north-up in the picture is
+    // actually *east* on the compass (camera rotated 90° CCW).
+    //
+    // Unused by v1 ML features but captured here so the cloud-motion
+    // detector (v2.0) has a per-camera compass reference without a
+    // schema migration later. Users who haven't calibrated leave the
+    // value at 0 — motion direction will then be expressed relative
+    // to the frame, not to the compass.
+
+    var colorNorthOffsetDeg: Double {
+        get { defaults.double(forKey: Key.colorNorthOffset, default: 0.0) }
+        set { defaults.set(newValue, forKey: Key.colorNorthOffset) }
+    }
+
+    var monoNorthOffsetDeg: Double {
+        get { defaults.double(forKey: Key.monoNorthOffset, default: 0.0) }
+        set { defaults.set(newValue, forKey: Key.monoNorthOffset) }
+    }
+
     /// Elevation below which the horizon ring is masked out.
     /// 30° matches the threshold under which ground-based
     /// astrophotography usually doesn't even point.
@@ -258,6 +284,8 @@ final class AppSettings {
         static let monoRadius   = "camera.mono.radiusPx"
         static let colorFov     = "camera.color.fovDeg"
         static let monoFov      = "camera.mono.fovDeg"
+        static let colorNorthOffset = "camera.color.northOffsetDeg"
+        static let monoNorthOffset  = "camera.mono.northOffsetDeg"
         static let horizonExclusion = "camera.horizonExclusionDeg"
         static let autonomousMin = "autonomous.minLabels"
         static let autonomousConfidence = "autonomous.confidenceThreshold"
