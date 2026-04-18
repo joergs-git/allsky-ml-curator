@@ -395,7 +395,7 @@ struct ContentView: View {
             legendRatingChip(key: "1", ratingClass: .fullCloud, label: "full clouds")
             legendRatingChip(key: "2", ratingClass: .mostly,    label: "mostly")
             legendRatingChip(key: "3", ratingClass: .some,      label: "some clouds")
-            legendRatingChip(key: "4", ratingClass: .thin,      label: "thin / dust")
+            legendRatingChip(key: "4", ratingClass: .thin,      label: "little / thin")
             legendRatingChip(key: "5", ratingClass: .clear,     label: "clear")
 
             Divider().frame(height: 18)

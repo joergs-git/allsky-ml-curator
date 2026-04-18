@@ -435,7 +435,7 @@ struct InfoSidePanel: View {
                     .joined(separator: ", ")
                 if !smallClasses.isEmpty, present >= 2 {
                     result.append(AnalysisTip(
-                        title: "Thin tails — rate more of the rare classes",
+                        title: "Sparse classes — rate more of the rare ones",
                         body: "Classes with <30 samples: \(smallClasses). With the inverse-frequency × 3× clear-sky boost these already over-influence training; more samples stabilise predictions."
                     ))
                 }

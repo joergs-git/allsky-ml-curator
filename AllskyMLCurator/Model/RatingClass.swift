@@ -17,7 +17,7 @@ enum RatingClass: Int, Codable, CaseIterable, Sendable {
         case .fullCloud: return "full clouds"
         case .mostly:    return "mostly clouds"
         case .some:      return "some clouds"
-        case .thin:      return "thin / dust"
+        case .thin:      return "little / thin"
         case .clear:     return "clear"
         }
     }
