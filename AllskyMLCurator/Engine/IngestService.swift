@@ -242,7 +242,7 @@ final class IngestService: ObservableObject {
         let matchedReading = nearestReading(to: captureUtc)
         if matchedReading != nil { enrichedWithWeather += 1 }
 
-        let matchedMeteoblueId = nearestMeteoblueHour(to: captureUtc)
+        let matchedMeteoblue = nearestMeteoblueHour(to: captureUtc)
 
         let record = classify(
             filePath: fileURL.path,
@@ -250,7 +250,7 @@ final class IngestService: ObservableObject {
             cameraType: cameraType,
             captureUtc: captureUtc,
             matchedReading: matchedReading,
-            meteoblueHourId: matchedMeteoblueId,
+            meteoblueHour: matchedMeteoblue,
             meta: meta
         )
 
@@ -301,22 +301,23 @@ final class IngestService: ObservableObject {
 
     /// Nearest meteoblue-forecast hour within ±30 min of the frame.
     /// Forecasts are hourly so the matching window is correspondingly
-    /// wider than the cloudwatcher ±5 min. Returns just the row id —
-    /// the aux features read back through the FK later.
+    /// wider than the cloudwatcher ±5 min. Returns the full row so the
+    /// caller can both (a) store the FK and (b) denormalise the
+    /// forecast values onto the image row for the aux features.
     private func nearestMeteoblueHour(
         to captureUtc: Date
-    ) -> Int64? {
+    ) -> SupabaseClient.MeteoblueHour? {
         guard !latestMeteoblueHours.isEmpty else { return nil }
-        var bestId: Int64?
+        var best: SupabaseClient.MeteoblueHour?
         var bestDelta = TimeInterval.greatestFiniteMagnitude
         for hour in latestMeteoblueHours {
             let delta = abs(hour.timestamp.timeIntervalSince(captureUtc))
             if delta < bestDelta {
                 bestDelta = delta
-                bestId = hour.id
+                best = hour
             }
         }
-        return bestDelta <= 1800 ? bestId : nil
+        return bestDelta <= 1800 ? best : nil
     }
 
     // MARK: - Classification
@@ -327,7 +328,7 @@ final class IngestService: ObservableObject {
         cameraType: CameraType,
         captureUtc: Date,
         matchedReading: SupabaseClient.CloudwatcherReading?,
-        meteoblueHourId: Int64?,
+        meteoblueHour: SupabaseClient.MeteoblueHour?,
         meta: MetaJsonReader.Metadata?
     ) -> ImageRecord {
         let latitude  = AppSettings.shared.latitudeDeg
@@ -376,7 +377,9 @@ final class IngestService: ObservableObject {
             captureUtc: captureUtc,
             timeOfDay: sun.timeOfDay,
             supabaseReadingId: matchedReading?.id,
-            meteoblueHourId: meteoblueHourId,
+            meteoblueHourId: meteoblueHour?.id,
+            meteoblueTotalCloud: meteoblueHour?.totalcloud,
+            meteoblueSeeingArcsec: meteoblueHour?.seeingArcsec,
             sunAltDeg: sun.horizontal.altitudeDeg,
             sunAzDeg: sun.horizontal.azimuthDeg,
             moonAltDeg: moon.horizontal.altitudeDeg,

@@ -183,6 +183,21 @@ final class Database {
             }
         }
 
+        // Denormalised forecast values so the classifier's aux vector
+        // can read them without a network or DB round-trip. totalcloud
+        // is 0…100 %, seeing_arcsec is unbounded (typically 1…6).
+        migrator.registerMigration("v5_add_meteoblue_aux") { db in
+            let existing = Set((try? db.columns(in: "images"))?.map(\.name) ?? [])
+            try db.alter(table: "images") { t in
+                if !existing.contains("meteoblueTotalCloud") {
+                    t.add(column: "meteoblueTotalCloud", .double)
+                }
+                if !existing.contains("meteoblueSeeingArcsec") {
+                    t.add(column: "meteoblueSeeingArcsec", .double)
+                }
+            }
+        }
+
         return migrator
     }
 }

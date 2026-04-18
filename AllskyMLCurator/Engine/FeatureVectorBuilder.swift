@@ -18,8 +18,11 @@ import Foundation
 /// [776]        cam_one_hot_mono        (0 or 1)
 /// [777]        reflection_risk_score   (0…1)
 /// [778]        transitional_risk_score (0…1)
+/// [779]        mb_has_forecast         (0 or 1)
+/// [780]        mb_total_cloud_norm     (totalcloud / 100, 0…1)
+/// [781]        mb_seeing_norm          ((seeing_arcsec - 1) / 5, clamped)
 /// ```
-/// Total: 779 features.
+/// Total: 782 features.
 ///
 /// Why the two risk scores matter: a frame with a strong sun / moon
 /// reflection looks bright and "feature-rich" in image space alone,
@@ -35,7 +38,7 @@ enum FeatureVectorBuilder {
 
     /// Aux-only slice length. Embedding length is appended on top by
     /// the embedding pipeline and known per revision at runtime.
-    static let auxCount = 11
+    static let auxCount = 14
 
     /// Build the full feature vector for one image. Returns `nil`
     /// when either the cached embedding or the basic ImageRecord
@@ -56,6 +59,19 @@ enum FeatureVectorBuilder {
         let moonAzRad = image.moonAzDeg * .pi / 180.0
         let camOneHot = cameraOneHot(for: image.cameraSource)
 
+        // Forecast aux. When the frame has no matching meteoblue hour
+        // we zero the flag + values; the classifier learns to discount
+        // the forecast channel in that case. The normalisation bounds
+        // match what `meteoblue_hourly` actually emits for Rheine —
+        // totalcloud is already 0…100, seeing rarely leaves 1″–6″.
+        let hasForecast: Float = image.meteoblueHourId == nil ? 0 : 1
+        let cloudNorm: Float = Float(
+            max(0.0, min(1.0, (image.meteoblueTotalCloud ?? 0.0) / 100.0))
+        )
+        let seeingNorm: Float = Float(
+            max(0.0, min(1.0, ((image.meteoblueSeeingArcsec ?? 1.0) - 1.0) / 5.0))
+        )
+
         return [
             Float(image.sunAltDeg / 90.0),
             Float(sin(sunAzRad)),
@@ -67,7 +83,10 @@ enum FeatureVectorBuilder {
             camOneHot.color,
             camOneHot.mono,
             Float(image.reflectionRiskScore),
-            Float(image.transitionalRiskScore)
+            Float(image.transitionalRiskScore),
+            hasForecast,
+            cloudNorm,
+            seeingNorm
         ]
     }
 
