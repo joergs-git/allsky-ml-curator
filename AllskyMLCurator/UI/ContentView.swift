@@ -10,7 +10,16 @@ struct ContentView: View {
 
     @State private var items: [ImageLibrary.ImageListItem] = []
     @State private var selectedIds: Set<Int64> = []
-    @State private var cameraFilter: CameraType? = nil
+    /// Default filter is `.color` so the dominant OSC feed is the
+    /// focus on first launch — the user can flip to "All cameras" or
+    /// "Monochrome" from the toolbar and the choice persists in
+    /// `AppSettings.lastCameraFilterRaw` across restarts.
+    @State private var cameraFilter: CameraType? = {
+        if let raw = AppSettings.shared.lastCameraFilterRaw {
+            return CameraType(rawValue: raw)
+        }
+        return nil    // user explicitly picked "All cameras" previously
+    }()
     @State private var onlyUnrated: Bool = false
     @State private var columns: Int = 6
     @State private var showIngestSheet: Bool = false
@@ -84,7 +93,8 @@ struct ContentView: View {
             }
             .pickerStyle(.menu)
             .frame(maxWidth: 220)
-            .onChange(of: cameraFilter) { _, _ in
+            .onChange(of: cameraFilter) { _, newValue in
+                AppSettings.shared.lastCameraFilterRaw = newValue?.rawValue
                 Task { await reload() }
             }
 
