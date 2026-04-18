@@ -121,9 +121,45 @@ final class EmbeddingPipeline: @unchecked Sendable {
         imagePath: String, cameraType: CameraType
     ) async -> Embedding? {
         let sourceURL = URL(fileURLWithPath: imagePath)
-        let geometry = SkyDiskMask.Geometry.fromSettings(for: cameraType)
 
-        guard let masked = SkyDiskMask.apply(to: sourceURL, geometry: geometry) else {
+        // Vision downsamples to 224 internally — decoding the full
+        // 3552×3552 JPEG just to throw the resolution away is a waste
+        // and measurably slower on SMB shares. Pull an ImageIO
+        // thumbnail first (≤ 1024 px long-edge), scale the fisheye
+        // geometry to match, then mask + feed that to Vision.
+        guard let source = CGImageSourceCreateWithURL(
+            sourceURL as CFURL, nil
+        ) else { return nil }
+
+        let thumbnailOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform:   true,
+            kCGImageSourceThumbnailMaxPixelSize:          1024
+        ]
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(
+            source, 0, thumbnailOptions as CFDictionary
+        ) else { return nil }
+
+        let scale: Double = {
+            guard let props = CGImageSourceCopyPropertiesAtIndex(
+                source, 0, nil
+            ) as? [CFString: Any],
+            let srcW = props[kCGImagePropertyPixelWidth] as? Int,
+            srcW > 0 else {
+                return 1.0
+            }
+            return Double(thumbnail.width) / Double(srcW)
+        }()
+
+        let baseGeometry = SkyDiskMask.Geometry.fromSettings(for: cameraType)
+        let geometry = SkyDiskMask.Geometry(
+            centerXPx: Int((Double(baseGeometry.centerXPx) * scale).rounded()),
+            centerYPx: Int((Double(baseGeometry.centerYPx) * scale).rounded()),
+            radiusPx: max(1, Int((Double(baseGeometry.radiusPx) * scale).rounded())),
+            cropFraction: baseGeometry.cropFraction
+        )
+
+        guard let masked = SkyDiskMask.apply(to: thumbnail, geometry: geometry) else {
             return nil
         }
 

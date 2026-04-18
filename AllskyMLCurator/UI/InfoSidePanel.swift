@@ -164,17 +164,41 @@ struct InfoSidePanel: View {
                         .foregroundStyle(.blue)
                 }
             } else if let summary = classifier.summary {
+                // Headline number = 5-fold CV accuracy (honest
+                // generalisation), falls back to train accuracy when
+                // the dataset is too small to split into five usable
+                // folds. `trainAccuracy` is kept as a detail row for
+                // comparison — a large gap between the two indicates
+                // overfitting.
+                let headline = summary.cvAccuracy ?? summary.trainAccuracy
                 BigMetric(
-                    label: "train accuracy",
-                    primary: "\(Int(summary.trainAccuracy * 100))%",
+                    label: summary.cvAccuracy != nil
+                        ? "5-fold CV accuracy"
+                        : "train accuracy (CV skipped)",
+                    primary: "\(Int(headline * 100))%",
                     secondary: "on \(summary.sampleCount) labels",
-                    accent: accuracyColor(summary.trainAccuracy),
+                    accent: accuracyColor(headline),
                     nightMode: nightMode
                 )
+                detailRow("Train accuracy",
+                          "\(Int(summary.trainAccuracy * 100))%")
+                if let cv = summary.cvAccuracy {
+                    let gap = Int((summary.trainAccuracy - cv) * 100)
+                    if gap > 10 {
+                        detailRow("Overfit gap", "+\(gap) pts (train > CV)")
+                    }
+                }
                 detailRow("Last trained",
                           summary.trainedAt.formatted(date: .omitted, time: .shortened))
                 detailRow("Duration", String(format: "%.0f ms", summary.durationSeconds * 1000))
                 detailRow("Class counts", classCountsBreakdown(summary.classCounts))
+
+                if let metrics = summary.classMetrics, !metrics.isEmpty {
+                    classMetricsTable(metrics)
+                }
+                if let confusion = summary.confusionMatrix {
+                    confusionMatrixView(confusion)
+                }
             } else if let coverage = classifier.lastCoverage {
                 let classesSeen = coverage.classCounts.filter { $0 > 0 }.count
                 BigMetric(
@@ -201,6 +225,124 @@ struct InfoSidePanel: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 4)
             }
+        }
+    }
+
+    // MARK: - Classifier metrics helpers
+
+    /// Per-class Precision / Recall / F1 table. Uses the class tier
+    /// colour in the leftmost cell so the rows visually tie to the
+    /// rating stars above.
+    private func classMetricsTable(
+        _ metrics: [ClassifierEngine.ClassMetrics]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("PER-CLASS QUALITY")
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .tracking(0.6)
+                .foregroundStyle(AppColors.fgDim(nightMode))
+                .padding(.top, 4)
+            HStack(spacing: 0) {
+                Text("cls").frame(width: 30, alignment: .leading)
+                Text("n").frame(width: 44, alignment: .trailing)
+                Text("P").frame(width: 42, alignment: .trailing)
+                Text("R").frame(width: 42, alignment: .trailing)
+                Text("F1").frame(width: 42, alignment: .trailing)
+            }
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(AppColors.fgDim(nightMode))
+            ForEach(metrics, id: \.ratingClass) { row in
+                HStack(spacing: 0) {
+                    HStack(spacing: 2) {
+                        Image(systemName: "star.fill")
+                            .font(.caption2.weight(.heavy))
+                            .foregroundStyle(
+                                AppColors.tier(row.ratingClass, night: nightMode)
+                            )
+                        Text("\(row.ratingClass.rawValue)")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(AppColors.fg(nightMode))
+                    }
+                    .frame(width: 30, alignment: .leading)
+                    Text("\(row.support)")
+                        .font(.caption.monospacedDigit())
+                        .frame(width: 44, alignment: .trailing)
+                    metricCell(row.precision).frame(width: 42, alignment: .trailing)
+                    metricCell(row.recall).frame(width: 42, alignment: .trailing)
+                    metricCell(row.f1).frame(width: 42, alignment: .trailing)
+                }
+                .foregroundStyle(AppColors.fg(nightMode))
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    @ViewBuilder private func metricCell(_ value: Float) -> some View {
+        let percent = Int((value * 100).rounded())
+        Text("\(percent)")
+            .font(.caption.monospacedDigit().weight(.semibold))
+            .foregroundStyle(accuracyColor(value))
+    }
+
+    /// Compact 5×5 confusion matrix visual. Diagonal cells shade
+    /// green (correct predictions), off-diagonal shade red (confusion),
+    /// intensity scaled by count. Axis labels mirror the tier colours.
+    private func confusionMatrixView(_ matrix: [Int]) -> some View {
+        let K = 5
+        let maxValue = max(1, matrix.max() ?? 1)
+        return VStack(alignment: .leading, spacing: 4) {
+            Text("CONFUSION (true → predicted)")
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .tracking(0.6)
+                .foregroundStyle(AppColors.fgDim(nightMode))
+                .padding(.top, 8)
+            VStack(spacing: 1) {
+                HStack(spacing: 1) {
+                    Color.clear.frame(width: 16, height: 18)
+                    ForEach(0..<K, id: \.self) { col in
+                        axisLabel(for: col)
+                            .frame(width: 36, height: 18)
+                    }
+                }
+                ForEach(0..<K, id: \.self) { row in
+                    HStack(spacing: 1) {
+                        axisLabel(for: row)
+                            .frame(width: 16, height: 22)
+                        ForEach(0..<K, id: \.self) { col in
+                            let count = matrix[row * K + col]
+                            confusionCell(
+                                count: count,
+                                isDiagonal: row == col,
+                                maxValue: maxValue
+                            )
+                            .frame(width: 36, height: 22)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func axisLabel(for index: Int) -> some View {
+        let cls = RatingClass(rawValue: index + 1) ?? .unrated
+        return Text("\(index + 1)")
+            .font(.system(size: 10, weight: .black, design: .monospaced))
+            .foregroundStyle(AppColors.tier(cls, night: nightMode))
+    }
+
+    private func confusionCell(
+        count: Int, isDiagonal: Bool, maxValue: Int
+    ) -> some View {
+        let intensity = maxValue > 0 ? Double(count) / Double(maxValue) : 0
+        let colour: Color = isDiagonal
+            ? Color.green.opacity(0.15 + 0.65 * intensity)
+            : (count == 0 ? AppColors.bgControl(nightMode)
+                          : Color.red.opacity(0.1 + 0.55 * intensity))
+        return ZStack {
+            Rectangle().fill(colour)
+            Text("\(count)")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundStyle(AppColors.fg(nightMode))
         }
     }
 
@@ -443,22 +585,69 @@ struct InfoSidePanel: View {
         }
 
         if let summary = classifier.summary {
-            let acc = summary.trainAccuracy
-            if acc < 0.4 {
+            let headlineAcc = summary.cvAccuracy ?? summary.trainAccuracy
+            if headlineAcc < 0.4 {
                 result.append(AnalysisTip(
-                    title: "Training accuracy is low (\(Int(acc * 100))%)",
-                    body: "Near-random for 5 classes. Likely causes: (1) class distribution still very skewed, (2) the 3× clear-sky boost over-weights the rare classes, (3) thin tails in 1 or 5. Fix order: rate more of whichever class has the fewest samples, retrain, check whether accuracy climbs."
+                    title: "Generalisation accuracy is low (\(Int(headlineAcc * 100))%)",
+                    body: "Near-random for 5 classes. Likely causes: (1) class distribution still very skewed, (2) the 3× clear-sky boost over-weights the rare classes, (3) embeddings cannot yet separate the visual tiers. Fix order: rate more of whichever class has the fewest samples, retrain, check whether accuracy climbs."
                 ))
-            } else if acc < 0.6 {
+            } else if headlineAcc < 0.6 {
                 result.append(AnalysisTip(
-                    title: "Classifier getting started (\(Int(acc * 100))%)",
+                    title: "Classifier getting started (\(Int(headlineAcc * 100))%)",
                     body: "Predictions are useful but not trustworthy yet. Scroll through the remaining unrated tiles — agree where the 🧠 badge matches, correct where it doesn't, retrain after every 30-50 corrections."
                 ))
             } else {
                 result.append(AnalysisTip(
-                    title: "Classifier in good shape (\(Int(acc * 100))% on \(summary.sampleCount) labels)",
+                    title: "Classifier in good shape (\(Int(headlineAcc * 100))% on \(summary.sampleCount) labels)",
                     body: "Predictions on unrated frames should be plausible now. Toggle 'Only unrated' to see them."
                 ))
+            }
+
+            // Overfit gap — train accuracy notably higher than CV
+            // accuracy indicates the model memorises the training set
+            // instead of generalising. Usually means the feature
+            // space is narrow for the current class spread.
+            if let cv = summary.cvAccuracy {
+                let gap = summary.trainAccuracy - cv
+                if gap > 0.15 {
+                    result.append(AnalysisTip(
+                        title: "Overfitting detected (+\(Int(gap * 100)) pts gap)",
+                        body: "Train accuracy runs well above 5-fold CV — the classifier is memorising the training frames. Either rate more diverse samples (especially in the under-represented classes) or reduce the clear-sky boost via a future Preferences knob."
+                    ))
+                }
+            }
+
+            // Zero-recall surfaces per-class failure modes the
+            // headline number hides — e.g. class 5 simply never
+            // gets predicted, yet overall accuracy looks ok because
+            // class 3 dominates.
+            if let metrics = summary.classMetrics {
+                let deadClasses = metrics.filter {
+                    $0.support >= 10 && $0.recall < 0.1
+                }
+                if !deadClasses.isEmpty {
+                    let names = deadClasses.map { "\($0.ratingClass.rawValue) (\($0.ratingClass.shortName))" }
+                        .joined(separator: ", ")
+                    result.append(AnalysisTip(
+                        title: "Blind-spot classes",
+                        body: "The classifier almost never predicts: \(names). Feature embedding may not discriminate them, or the class weights are pushing the decision boundary away. Consider rating more examples of these classes or adjusting the clear-sky boost."
+                    ))
+                }
+
+                // Mirror the above for over-eager classes: precision
+                // near zero with non-trivial support = false positives
+                // drowning any real signal.
+                let overCallers = metrics.filter {
+                    $0.support >= 10 && $0.precision < 0.2 && $0.recall > 0
+                }
+                if !overCallers.isEmpty {
+                    let names = overCallers.map { "\($0.ratingClass.rawValue)" }
+                        .joined(separator: ", ")
+                    result.append(AnalysisTip(
+                        title: "False-positive heavy classes",
+                        body: "Classes \(names) are predicted often but mostly wrong — precision below 20%. The model is over-eager, typically because inverse-frequency × clear-sky boost makes the gradient steer toward them. More samples in neighbour classes reduces this."
+                    ))
+                }
             }
         }
 

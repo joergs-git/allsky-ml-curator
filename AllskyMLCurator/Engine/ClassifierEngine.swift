@@ -45,7 +45,26 @@ final class ClassifierEngine: ObservableObject {
         var classCounts: [Int]     // 5 slots
         var finalLoss: Float
         var trainAccuracy: Float
+        /// Generalization accuracy estimated via 5-fold cross-validation
+        /// — the "honest" number the user should look at. Nil when the
+        /// dataset is too small to split into five usable folds.
+        var cvAccuracy: Float?
+        /// 5×5 confusion matrix from CV. Row = true class, column =
+        /// predicted class (indices 0…4 → RatingClass 1…5). Nil when
+        /// CV was skipped.
+        var confusionMatrix: [Int]?
+        /// Per-class precision / recall / F1 / support, derived from
+        /// the confusion matrix.
+        var classMetrics: [ClassMetrics]?
         var durationSeconds: Double
+    }
+
+    struct ClassMetrics: Equatable, Sendable {
+        let ratingClass: RatingClass
+        let support: Int
+        let precision: Float
+        let recall: Float
+        let f1: Float
     }
 
     enum TrainingError: Error, LocalizedError {
@@ -179,6 +198,18 @@ final class ClassifierEngine: ObservableObject {
                 sampleWeights: weightsPerSample
             )
 
+            // Generalization estimate via 5-fold CV. Requires at
+            // least ~10 samples in every represented class, else each
+            // fold's train set would lose a whole class and the
+            // accuracy number becomes misleading. When too small,
+            // we still report train accuracy and the user gets a
+            // note in the analysis helper explaining why CV is off.
+            let cvResult = runCrossValidationIfFeasible(
+                samples: samples,
+                classCounts: classCounts,
+                sampleWeights: weightsPerSample
+            )
+
             let duration = Date().timeIntervalSince(started)
 
             summary = TrainingSummary(
@@ -187,6 +218,14 @@ final class ClassifierEngine: ObservableObject {
                 classCounts: classCounts,
                 finalLoss: finalLoss,
                 trainAccuracy: trainAccuracy,
+                cvAccuracy: cvResult?.accuracy,
+                confusionMatrix: cvResult?.confusion,
+                classMetrics: cvResult.map {
+                    Self.deriveClassMetrics(
+                        confusion: $0.confusion,
+                        numClasses: self.numClasses
+                    )
+                },
                 durationSeconds: duration
             )
 
@@ -436,6 +475,217 @@ final class ClassifierEngine: ObservableObject {
         let accuracy = Float(correct) / Float(N)
 
         return (finalLoss, accuracy)
+    }
+
+    // MARK: - Cross-validation
+
+    private struct CVResult {
+        let accuracy: Float
+        /// Row-major K × K matrix where [true × K + predicted] = count.
+        let confusion: [Int]
+    }
+
+    /// Decide whether we can afford a 5-fold CV and run it.
+    /// Skipped when any represented class has fewer than 10 samples —
+    /// at that point one fold's training set loses the class entirely
+    /// and the reported accuracy misleads.
+    private func runCrossValidationIfFeasible(
+        samples: [LabeledSample],
+        classCounts: [Int],
+        sampleWeights: [Float]
+    ) -> CVResult? {
+        let minSamplesPerClass = 10
+        let smallestPresentClass = classCounts.filter { $0 > 0 }.min() ?? 0
+        guard samples.count >= 50,
+              smallestPresentClass >= minSamplesPerClass
+        else { return nil }
+        return runCrossValidation(
+            samples: samples, sampleWeights: sampleWeights
+        )
+    }
+
+    /// 5-fold CV. For every fold we refit on 4/5 of the data and
+    /// predict the held-out 1/5; predictions across folds cover the
+    /// whole dataset exactly once, giving an honest generalisation
+    /// accuracy. Same hyperparameters as the main train() call so
+    /// the number reflects the model the user actually gets.
+    private func runCrossValidation(
+        samples: [LabeledSample],
+        sampleWeights: [Float]
+    ) -> CVResult {
+        let K = numClasses
+        let n = samples.count
+        var confusion = [Int](repeating: 0, count: K * K)
+        var correct = 0
+
+        // Stable pseudo-random shuffle: xorshift on indices so the
+        // fold assignment depends only on data order, not a fresh
+        // randomness source that would change the reported number
+        // between two identical train calls.
+        var order = Array(0..<n)
+        var rng: UInt64 = 0xC0FFEE
+        for i in (1..<n).reversed() {
+            rng ^= rng << 13
+            rng ^= rng >> 7
+            rng ^= rng << 17
+            let j = Int(rng % UInt64(i + 1))
+            order.swapAt(i, j)
+        }
+
+        let shuffledSamples = order.map { samples[$0] }
+        let shuffledWeights = order.map { sampleWeights[$0] }
+        let foldSize = n / 5
+
+        for foldIdx in 0..<5 {
+            let testStart = foldIdx * foldSize
+            let testEnd   = (foldIdx == 4) ? n : testStart + foldSize
+
+            let trainIndices = Array(0..<testStart) + Array(testEnd..<n)
+            let trainSamples = trainIndices.map { shuffledSamples[$0] }
+            let trainWeights = trainIndices.map { shuffledWeights[$0] }
+            let testSamples = Array(shuffledSamples[testStart..<testEnd])
+
+            // Skip a fold whose training set ends up with <2 classes
+            // (extreme skew + small dataset edge case).
+            let trainClassSet = Set(trainSamples.map(\.classIndex))
+            guard trainClassSet.count >= 2 else { continue }
+
+            let (W, b) = fitLinearClassifier(
+                samples: trainSamples, sampleWeights: trainWeights
+            )
+
+            for sample in testSamples {
+                let predicted = Self.argmaxPrediction(
+                    vector: sample.features,
+                    weights: W, bias: b, numClasses: K
+                )
+                confusion[sample.classIndex * K + predicted] += 1
+                if predicted == sample.classIndex { correct += 1 }
+            }
+        }
+
+        let accuracy = Float(correct) / Float(n)
+        return CVResult(accuracy: accuracy, confusion: confusion)
+    }
+
+    /// Extracted from runGradientDescent so the CV loop can call it
+    /// without touching `self.weights` / `self.bias`. Same numerics —
+    /// full-batch softmax-CE GD, L2 regularisation, per-sample weights.
+    private func fitLinearClassifier(
+        samples: [LabeledSample],
+        sampleWeights: [Float]
+    ) -> (weights: [Float], bias: [Float]) {
+        let N = samples.count
+        let D = samples[0].features.count
+        let K = numClasses
+
+        var X = [Float](repeating: 0, count: N * D)
+        for (i, sample) in samples.enumerated() {
+            for j in 0..<D { X[i * D + j] = sample.features[j] }
+        }
+        let y = samples.map(\.classIndex)
+        var Y = [Float](repeating: 0, count: N * K)
+        for (i, c) in y.enumerated() { Y[i * K + c] = 1 }
+
+        var W = [Float](repeating: 0, count: D * K)
+        var b = [Float](repeating: 0, count: K)
+        var probs = [Float](repeating: 0, count: N * K)
+        var gradW = [Float](repeating: 0, count: D * K)
+        var gradB = [Float](repeating: 0, count: K)
+
+        for _ in 0..<hp.iterations {
+            forwardLogits(X: X, W: W, b: b, out: &probs, N: N, D: D, K: K)
+            softmaxInPlace(&probs, N: N, K: K)
+
+            var diff = probs
+            vDSP.subtract(probs, Y, result: &diff)
+            applySampleWeights(to: &diff, weights: sampleWeights, K: K)
+            var scale = Float(1) / Float(N)
+            vDSP_vsmul(diff, 1, &scale, &diff, 1, vDSP_Length(N * K))
+
+            multiply(
+                aT: true, a: X, aRows: N, aCols: D,
+                bT: false, b: diff, bRows: N, bCols: K,
+                out: &gradW
+            )
+            var lambda = hp.l2
+            var two: Float = 2
+            var scaleWtoGrad = lambda * two
+            vDSP_vsma(
+                W, 1, &scaleWtoGrad, gradW, 1, &gradW, 1,
+                vDSP_Length(D * K)
+            )
+
+            for k in 0..<K {
+                var colSum: Float = 0
+                for i in 0..<N { colSum += diff[i * K + k] }
+                gradB[k] = colSum
+            }
+
+            var negLR = -hp.learningRate
+            vDSP_vsma(gradW, 1, &negLR, W, 1, &W, 1, vDSP_Length(D * K))
+            vDSP_vsma(gradB, 1, &negLR, b, 1, &b, 1, vDSP_Length(K))
+        }
+
+        return (W, b)
+    }
+
+    /// Argmax shortcut — returns the predicted class index (0…K-1).
+    private static func argmaxPrediction(
+        vector: [Float],
+        weights: [Float], bias: [Float], numClasses: Int
+    ) -> Int {
+        let D = vector.count
+        var logits = bias
+        cblas_sgemv(
+            CblasRowMajor, CblasTrans,
+            Int32(D), Int32(numClasses),
+            1, weights, Int32(numClasses),
+            vector, 1,
+            1, &logits, 1
+        )
+        var best: Float = -.greatestFiniteMagnitude
+        var bestIdx = 0
+        for k in 0..<numClasses where logits[k] > best {
+            best = logits[k]
+            bestIdx = k
+        }
+        return bestIdx
+    }
+
+    /// Row-sum over truth + column-sum over predictions yield support,
+    /// TP per class, FP per class, FN per class, then P/R/F1.
+    private static func deriveClassMetrics(
+        confusion: [Int], numClasses K: Int
+    ) -> [ClassMetrics] {
+        var metrics: [ClassMetrics] = []
+        metrics.reserveCapacity(K)
+        for c in 0..<K {
+            let tp = confusion[c * K + c]
+            var rowSum = 0
+            var colSum = 0
+            for k in 0..<K {
+                rowSum += confusion[c * K + k]
+                colSum += confusion[k * K + c]
+            }
+            let fp = colSum - tp
+            let fn = rowSum - tp
+            let precision: Float = (tp + fp) > 0 ? Float(tp) / Float(tp + fp) : 0
+            let recall: Float    = (tp + fn) > 0 ? Float(tp) / Float(tp + fn) : 0
+            let f1: Float        = (precision + recall) > 0
+                ? 2 * precision * recall / (precision + recall)
+                : 0
+            metrics.append(
+                ClassMetrics(
+                    ratingClass: RatingClass(rawValue: c + 1) ?? .unrated,
+                    support: rowSum,
+                    precision: precision,
+                    recall: recall,
+                    f1: f1
+                )
+            )
+        }
+        return metrics
     }
 
     // MARK: - Prediction over the library
