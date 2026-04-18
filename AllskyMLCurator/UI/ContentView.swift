@@ -90,6 +90,13 @@ struct ContentView: View {
             // and refuses to train. This catches up the gap.
             await warmRatedEmbeddings()
         }
+        .task {
+            // Rehydrate the last trained classifier on launch so
+            // prediction overlays appear immediately without the user
+            // hitting ⌘T again. A fresh train will overwrite the
+            // in-memory state (and insert a new model_versions row).
+            await classifier.restoreLatestModel()
+        }
         .sheet(isPresented: $showIngestSheet, onDismiss: {
             Task { await reload() }
         }) {
