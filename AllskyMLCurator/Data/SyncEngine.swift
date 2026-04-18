@@ -44,6 +44,13 @@ final class SyncEngine: ObservableObject {
             if case .failed = self { return true }
             return false
         }
+
+        /// True while the engine is actively pushing rows — drives
+        /// the toolbar gauge icon's pulse animation.
+        var isPushing: Bool {
+            if case .pushing = self { return true }
+            return false
+        }
     }
 
     @Published private(set) var status: Status = .idle
