@@ -116,6 +116,62 @@ final class AppSettings {
         set { defaults.set(newValue, forKey: Key.monoRadius) }
     }
 
+    // MARK: - Optical FoV + zenith-crop (dynamic per setup)
+    //
+    // Allsky frames cover the whole hemisphere but the horizon ring
+    // is useless for astrophotography rating — below ~30° elevation
+    // there is always scattered cloud, haze, light pollution, and
+    // tree / building silhouette. Worse, it drags the rating label
+    // away from what matters ("is the zenith clear?") toward "is the
+    // far horizon clear?", which the curator can't control.
+    //
+    // The fix is a symmetric zenith crop applied to both the display
+    // thumbnail and the ML embedding, so "what you see is what you
+    // train on". The crop radius is computed from:
+    //
+    //   crop_fraction = (90° - horizon_exclusion°) / (fov° / 2)
+    //
+    // assuming an equidistant fisheye projection (angle from zenith
+    // maps linearly to pixel radius, true to within a few percent on
+    // most allsky lenses). Defaults exclude everything below 30°
+    // elevation — for the ZWO ASI676MC (176° FoV) that yields
+    // crop_fraction ≈ 0.68, for the SX SuperStar (112.5° FoV) the
+    // full disk already fits above 33° elevation so the crop is a
+    // no-op (clamped to 1.0).
+
+    var colorFovDeg: Double {
+        get { defaults.double(forKey: Key.colorFov, default: 176.0) }
+        set { defaults.set(newValue, forKey: Key.colorFov) }
+    }
+
+    var monoFovDeg: Double {
+        get { defaults.double(forKey: Key.monoFov, default: 112.5) }
+        set { defaults.set(newValue, forKey: Key.monoFov) }
+    }
+
+    /// Elevation below which the horizon ring is masked out.
+    /// 30° matches the threshold under which ground-based
+    /// astrophotography usually doesn't even point.
+    var horizonExclusionDeg: Double {
+        get { defaults.double(forKey: Key.horizonExclusion, default: 30.0) }
+        set { defaults.set(newValue, forKey: Key.horizonExclusion) }
+    }
+
+    /// Computed radius fraction for the zenith crop, per camera type.
+    /// Returns 1.0 when the camera's FoV already tops out above the
+    /// horizon-exclusion elevation — no crop needed.
+    func zenithCropFraction(for cameraType: CameraType) -> Double {
+        let fov: Double
+        switch cameraType {
+        case .color:      fov = colorFovDeg
+        case .monochrome: fov = monoFovDeg
+        }
+        let halfFov = fov / 2.0
+        let angleFromZenith = 90.0 - horizonExclusionDeg
+        guard halfFov > 0 else { return 1.0 }
+        return max(0.1, min(1.0, angleFromZenith / halfFov))
+    }
+
     // MARK: - Autonomous mode
 
     /// Minimum genuine human labels required before F10 autonomous mode
@@ -166,6 +222,9 @@ final class AppSettings {
         static let monoCenterX  = "camera.mono.centerXPx"
         static let monoCenterY  = "camera.mono.centerYPx"
         static let monoRadius   = "camera.mono.radiusPx"
+        static let colorFov     = "camera.color.fovDeg"
+        static let monoFov      = "camera.mono.fovDeg"
+        static let horizonExclusion = "camera.horizonExclusionDeg"
         static let autonomousMin = "autonomous.minLabels"
         static let autonomousConfidence = "autonomous.confidenceThreshold"
         static let clearBoost = "ml.clearClassBoost"
