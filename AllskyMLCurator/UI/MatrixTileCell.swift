@@ -117,29 +117,28 @@ struct MatrixTileCell: View {
         }
         .aspectRatio(1, contentMode: .fit)
         .task(id: item.image.filePath) {
-            // Thumbnail drives the visible tile; embedding extraction
-            // runs in parallel via `async let` so the Phase-5b
-            // classifier has a warm .fp sidecar by the time the user
-            // asks for predictions. Critically, `async let` ties the
-            // embedding task to *this* tile's .task lifetime — when
-            // the tile scrolls off, SwiftUI cancels .task, which
-            // cancels the child embedding task. A previous revision
-            // used Task.detached here; that orphaned the embedding
-            // task from view cancellation, so scrolling through 20k+
-            // tiles piled up 20k orphan tasks queued on the 3-slot
-            // embedding semaphore and starved the thumbnail pipeline
-            // sharing the same SMB channel.
+            // Tile-level work is now thumbnail-only. The previous
+            // design also kicked off `EmbeddingPipeline.generate`
+            // concurrently so unrated tiles would accumulate
+            // predictions the moment the classifier was trained —
+            // but on libraries with thousands of unrated frames the
+            // 3-slot embedding semaphore filled up faster than the
+            // cooperative thread pool could drain it, and scroll
+            // would stall at a few hundred tiles while the queue
+            // grew without bound.
+            //
+            // Rated images still get their embeddings via the
+            // `ContentView.warmRatedEmbeddings` launch-time walker.
+            // Unrated frames stay embedding-less until the user
+            // explicitly asks the classifier to predict them (via
+            // training + `recomputeAllPredictions` or the autonomous
+            // rater) — both of which iterate deliberately rather
+            // than racing with scroll.
             let filePath = item.image.filePath
             let cameraType = item.image.cameraSource.cameraType
-            async let embedding: Void = {
-                _ = await EmbeddingPipeline.shared.generate(
-                    for: filePath, cameraType: cameraType
-                )
-            }()
             image = await ThumbnailCache.shared.generate(
                 for: filePath, cameraType: cameraType
             )
-            await embedding
         }
     }
 
