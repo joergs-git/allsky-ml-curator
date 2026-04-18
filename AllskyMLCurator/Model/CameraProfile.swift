@@ -104,23 +104,14 @@ struct CameraProfile: Codable, Equatable, Sendable {
         var notes: String?
     }
 
-    // MARK: - JSON coding
-
-    enum CodingKeys: String, CodingKey {
-        case id
-        case displayName       = "display_name"
-        case site
-        case sensor
-        case fisheye
-        case overlayMaskRectsPx = "overlay_mask_rects_px"
-        case orientation
-        case filePathPatterns   = "file_path_patterns"
-        case stf
-        case calibration
-        case schemaVersion      = "schema_version"
-    }
-
     // MARK: - Loading
+    //
+    // No explicit CodingKeys: JSON files use snake_case and the decoder
+    // is configured with `keyDecodingStrategy = .convertFromSnakeCase`
+    // so `"display_name"` → `displayName`, `"overlay_mask_rects_px"` →
+    // `overlayMaskRectsPx`, etc. Mixing explicit CodingKeys (with
+    // snake_case raw values) and the strategy breaks decoding — the
+    // strategy rewrites the key, then the lookup falls through.
 
     /// Decode a profile from a JSON file on disk. Throws on malformed or
     /// missing data — no silent fallbacks, because a wrong profile would
