@@ -2,7 +2,7 @@
 
 > Native macOS (Apple Silicon, Metal-accelerated) image curator for allsky 360° sky photography, with on-device ML assistance and live learning.
 
-**Version:** 0.1.0 (pre-MVP — scaffolding only)
+**Version:** 0.2.0 (pre-MVP — ingest pipeline usable, UI minimal)
 **Status:** Active development, v1 MVP targeted
 **License:** Personal / TBD
 
