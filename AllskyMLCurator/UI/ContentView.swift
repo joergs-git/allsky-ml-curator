@@ -60,6 +60,16 @@ struct ContentView: View {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
+        .task {
+            // Background warmer: extract embeddings for every rated
+            // frame once at launch, independently of what the user
+            // scrolls over. The MatrixTileCell .task path only fires
+            // for visible tiles, which can leave hundreds of rated
+            // frames without embeddings after a session of rapid
+            // Cmd+A rating — the classifier then sees only one class
+            // and refuses to train. This catches up the gap.
+            await warmRatedEmbeddings()
+        }
         .sheet(isPresented: $showIngestSheet, onDismiss: {
             Task { await reload() }
         }) {
@@ -367,6 +377,25 @@ struct ContentView: View {
         items = loaded
         selectedIds.formIntersection(Set(loaded.map(\.id)))
         isLoading = false
+    }
+
+    /// Walk every rated image sequentially and call
+    /// `EmbeddingPipeline.generate` for any that don't yet have a
+    /// cached `.fp` sidecar. The pipeline's internal AsyncSemaphore
+    /// still caps concurrency at 3, so this doesn't saturate the SMB
+    /// channel — it just keeps work flowing while the user rates.
+    private func warmRatedEmbeddings() async {
+        let rated = await ImageLibrary.shared.fetchRatedImages()
+        for image in rated {
+            if Task.isCancelled { return }
+            if EmbeddingPipeline.shared.cached(for: image.filePath) != nil {
+                continue
+            }
+            _ = await EmbeddingPipeline.shared.generate(
+                for: image.filePath,
+                cameraType: image.cameraSource.cameraType
+            )
+        }
     }
 }
 
