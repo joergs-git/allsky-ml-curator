@@ -7,9 +7,11 @@ import Foundation
 /// sibling AstroTriage-blinkV2 project follows the same pattern, which
 /// keeps tooling consistent.
 ///
-/// The Supabase URL and anon key are loaded from Keychain and paste-able
-/// from the Preferences window. Environment variables override Keychain
-/// when present so CI/dev loops can inject values via the Xcode scheme.
+/// The Supabase URL and anon key are loaded from `CredentialsStore`
+/// (UserDefaults-backed — see that file for why Keychain was dropped
+/// in the dev build) and paste-able from the Preferences window.
+/// Environment variables override the stored values when present so
+/// CI / dev loops can inject values via the Xcode scheme.
 final class SupabaseClient {
 
     // MARK: - Singleton
@@ -68,8 +70,8 @@ final class SupabaseClient {
         let env = ProcessInfo.processInfo.environment
         let envURL = env["SUPABASE_URL"]
         let envKey = env["SUPABASE_ANON_KEY"]
-        let url = (envURL?.isEmpty == false) ? envURL : (try? KeychainStore.read(Self.urlAccount))
-        let key = (envKey?.isEmpty == false) ? envKey : (try? KeychainStore.read(Self.anonKeyAccount))
+        let url = (envURL?.isEmpty == false) ? envURL : (try? CredentialsStore.read(Self.urlAccount))
+        let key = (envKey?.isEmpty == false) ? envKey : (try? CredentialsStore.read(Self.anonKeyAccount))
         guard let url = url?.trimmingCharacters(in: .whitespacesAndNewlines),
               let key = key?.trimmingCharacters(in: .whitespacesAndNewlines),
               !url.isEmpty, !key.isEmpty else {
@@ -83,14 +85,14 @@ final class SupabaseClient {
     /// `nil` to clear it.
     func saveConfig(urlString: String?, anonKey: String?) throws {
         if let urlString, !urlString.isEmpty {
-            try KeychainStore.write(urlString, for: Self.urlAccount)
+            try CredentialsStore.write(urlString, for: Self.urlAccount)
         } else {
-            try KeychainStore.delete(Self.urlAccount)
+            try CredentialsStore.delete(Self.urlAccount)
         }
         if let anonKey, !anonKey.isEmpty {
-            try KeychainStore.write(anonKey, for: Self.anonKeyAccount)
+            try CredentialsStore.write(anonKey, for: Self.anonKeyAccount)
         } else {
-            try KeychainStore.delete(Self.anonKeyAccount)
+            try CredentialsStore.delete(Self.anonKeyAccount)
         }
     }
 

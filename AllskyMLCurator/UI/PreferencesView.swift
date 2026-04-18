@@ -319,7 +319,7 @@ struct PreferencesView: View {
             }
 
             Section {
-                Text("Values are stored in the macOS Keychain. Environment variables SUPABASE_URL and SUPABASE_ANON_KEY override Keychain when set in the Xcode launch environment.")
+                Text("Values are stored in UserDefaults. The Supabase anon key is designed for client-side use (RLS policies do the real enforcement server-side) and the URL is never secret, so Keychain-level protection isn't worth the per-launch login prompt that an ad-hoc-signed dev build otherwise triggers. Environment variables SUPABASE_URL and SUPABASE_ANON_KEY override the stored values when set in the Xcode launch environment.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
