@@ -35,7 +35,7 @@ final class ImageLibrary: ObservableObject {
     func fetchImages(
         cameraType: CameraType? = nil,
         includeExcluded: Bool = false,
-        onlyUnrated: Bool = false,
+        ratingFilter: RatingFilter = .any,
         limit: Int? = 10_000
     ) async -> [ImageListItem] {
         let reader = Database.shared.reader
@@ -71,10 +71,12 @@ final class ImageLibrary: ObservableObject {
                     return ImageListItem(image: img, label: label)
                 }
 
-                if onlyUnrated {
+                if case .any = ratingFilter {
+                    // no-op — most common case, skip predicate allocation
+                } else {
                     results = results.filter { item in
                         let cls = item.label?.ratingClass ?? .unrated
-                        return cls == .unrated
+                        return ratingFilter.includes(cls)
                     }
                 }
                 return results

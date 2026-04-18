@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import GRDB
 import SwiftUI
@@ -328,7 +329,7 @@ final class IngestService: ObservableObject {
         return ImageRecord(
             id: nil,
             filePath: filePath,
-            fileHashSha256: nil,
+            fileHashSha256: Self.pathIdentityHash(for: filePath),
             cameraSource: cameraSource,
             captureUtc: captureUtc,
             timeOfDay: sun.timeOfDay,
@@ -349,6 +350,18 @@ final class IngestService: ObservableObject {
             embeddingRevision: 0,
             createdAt: Date()
         )
+    }
+
+    /// Cheap "stable identity" hash of the file path. Not a content
+    /// hash — moving / renaming the file produces a new identity — but
+    /// good enough for the Supabase row to carry a deterministic ID
+    /// that matches across machines sharing the same filesystem. A
+    /// proper content-hash variant can be computed lazily by the
+    /// embedding pipeline; at ingest time reading each JPG twice over
+    /// SMB would be painful.
+    private static func pathIdentityHash(for path: String) -> String {
+        let digest = SHA256.hash(data: Data(path.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: - Database insert

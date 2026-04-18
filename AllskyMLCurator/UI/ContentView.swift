@@ -20,7 +20,7 @@ struct ContentView: View {
         }
         return nil    // user explicitly picked "All cameras" previously
     }()
-    @State private var onlyUnrated: Bool = false
+    @State private var ratingFilter: RatingFilter = .any
     @State private var columns: Int = 6
     @State private var showIngestSheet: Bool = false
     @State private var showInfoPanel: Bool = true
@@ -138,10 +138,18 @@ struct ContentView: View {
                 Task { await reload() }
             }
 
-            Toggle("Only unrated", isOn: $onlyUnrated)
-                .onChange(of: onlyUnrated) { _, _ in
-                    Task { await reload() }
+            Picker("Filter", selection: $ratingFilter) {
+                ForEach(RatingFilter.allCases, id: \.id) { filter in
+                    Text(filter.displayName).tag(filter)
                 }
+            }
+            .pickerStyle(.menu)
+            .frame(maxWidth: 190)
+            .labelsHidden()
+            .help("Restrict the matrix to a single rating class (or to unrated frames).")
+            .onChange(of: ratingFilter) { _, _ in
+                Task { await reload() }
+            }
 
             Picker("", selection: $columns) {
                 Text("4").tag(4)
@@ -490,7 +498,7 @@ struct ContentView: View {
         isLoading = true
         let loaded = await ImageLibrary.shared.fetchImages(
             cameraType: cameraFilter,
-            onlyUnrated: onlyUnrated
+            ratingFilter: ratingFilter
         )
         items = loaded
         selectedIds.formIntersection(Set(loaded.map(\.id)))

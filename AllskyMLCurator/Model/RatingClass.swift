@@ -41,6 +41,56 @@ enum LabelSource: String, Codable, Sendable {
     case autoConfirmed  = "auto_confirmed" // human-confirmed, weighted 0.3×
 }
 
+/// Rating filter applied to the matrix view.
+///
+/// Lives here rather than in the UI layer because the database query
+/// path uses it too. `displayName` doubles as the picker label.
+enum RatingFilter: Hashable, Identifiable, Sendable {
+    case any
+    case unrated
+    case exactly(RatingClass)
+
+    var id: String {
+        switch self {
+        case .any:                   return "any"
+        case .unrated:               return "unrated"
+        case .exactly(let c):        return "cls\(c.rawValue)"
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .any:              return "Any rating"
+        case .unrated:          return "Only unrated"
+        case .exactly(let c):
+            let stars = String(repeating: "★", count: c.rawValue)
+            return "Only \(stars)  \(c.shortName)"
+        }
+    }
+
+    /// All cases in a stable order for the menu.
+    static var allCases: [RatingFilter] {
+        [
+            .any,
+            .unrated,
+            .exactly(.fullCloud),
+            .exactly(.mostly),
+            .exactly(.some),
+            .exactly(.thin),
+            .exactly(.clear)
+        ]
+    }
+
+    /// Does this filter include the given class?
+    func includes(_ cls: RatingClass) -> Bool {
+        switch self {
+        case .any:              return true
+        case .unrated:          return cls == .unrated
+        case .exactly(let c):   return cls == c
+        }
+    }
+}
+
 /// Time-of-day category derived from sun altitude. Thresholds follow the
 /// standard twilight definitions.
 enum TimeOfDay: String, Codable, Sendable {
