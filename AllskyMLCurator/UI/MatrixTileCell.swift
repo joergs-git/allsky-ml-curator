@@ -120,8 +120,9 @@ struct MatrixTileCell: View {
             // Thumbnail drives the visible tile; embedding extraction
             // is fired in parallel so the Phase-5b classifier has a
             // warm .fp sidecar by the time the user asks for
-            // predictions. Fire-and-forget — failures are silent
-            // (missing SMB mount, unreadable JPG).
+            // predictions. Both pipelines use the same SkyDiskMask
+            // crop fraction, so what you see in the matrix is what
+            // the classifier was trained on.
             let filePath = item.image.filePath
             let cameraType = item.image.cameraSource.cameraType
             Task.detached(priority: .background) {
@@ -129,7 +130,9 @@ struct MatrixTileCell: View {
                     for: filePath, cameraType: cameraType
                 )
             }
-            image = await ThumbnailCache.shared.generate(for: filePath)
+            image = await ThumbnailCache.shared.generate(
+                for: filePath, cameraType: cameraType
+            )
         }
     }
 

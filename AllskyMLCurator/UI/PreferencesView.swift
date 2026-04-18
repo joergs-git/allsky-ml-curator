@@ -23,6 +23,15 @@ struct PreferencesView: View {
     @State private var monoCenterX:  Int = AppSettings.shared.monoFisheyeCenterXPx
     @State private var monoCenterY:  Int = AppSettings.shared.monoFisheyeCenterYPx
     @State private var monoRadius:   Int = AppSettings.shared.monoFisheyeRadiusPx
+    @State private var colorFov:     Double = AppSettings.shared.colorFovDeg
+    @State private var monoFov:      Double = AppSettings.shared.monoFovDeg
+    @State private var horizonExclusion: Double = AppSettings.shared.horizonExclusionDeg
+
+    // MARK: - Advanced tab state
+
+    @State private var purgeConfirmScope: PurgeService.Scope?
+    @State private var purgeStatus: String = ""
+    @State private var isPurging: Bool = false
 
     // MARK: - Supabase state
 
@@ -39,6 +48,8 @@ struct PreferencesView: View {
                 .tabItem { Label("Camera", systemImage: "camera") }
             supabaseTab
                 .tabItem { Label("Supabase", systemImage: "externaldrive.connected.to.line.below") }
+            advancedTab
+                .tabItem { Label("Advanced", systemImage: "exclamationmark.triangle") }
         }
         .frame(minWidth: 640, minHeight: 460)
         .onAppear(perform: loadSupabaseConfig)
@@ -133,13 +144,139 @@ struct PreferencesView: View {
                 }
             }
 
+            Section("Field of view + zenith crop") {
+                LabeledContent("Color FoV (°)") {
+                    TextField("", value: $colorFov, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 140)
+                        .onChange(of: colorFov) { _, new in
+                            AppSettings.shared.colorFovDeg = new
+                        }
+                }
+                LabeledContent("Monochrome FoV (°)") {
+                    TextField("", value: $monoFov, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 140)
+                        .onChange(of: monoFov) { _, new in
+                            AppSettings.shared.monoFovDeg = new
+                        }
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Horizon exclusion (°)")
+                        Spacer()
+                        Text(String(format: "%.0f°", horizonExclusion))
+                            .font(.body.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    Slider(
+                        value: $horizonExclusion,
+                        in: 0...45,
+                        step: 1
+                    )
+                    .onChange(of: horizonExclusion) { _, new in
+                        AppSettings.shared.horizonExclusionDeg = new
+                    }
+                    Text(cropSummaryText)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section {
-                Text("Fisheye center + radius describe the sky disk inside each rectangular frame. The Phase-2 SkyDiskMask pipeline will crop every image to this circle before feeding it to the ML embedding so burned-in overlay text can't influence the classifier. First-launch defaults match the Rheine rig (ZWO ASI676MC OSC + SX CCD SuperStar mono) and are only a starting point — edit the values above for a different camera. For FITS, future revisions will auto-populate these from the file header (NAXIS1/NAXIS2) when available.")
+                Text("Fisheye center + radius describe the sky disk inside each rectangular frame. Field-of-view + horizon exclusion drive the zenith crop applied to both the matrix thumbnail and the ML embedding. 30° exclusion matches the elevation below which ground-based astro rarely points — setting it higher focuses the rating on the zenith cone, lower lets more horizon through.\n\nDefaults: ZWO ASI676MC OSC (176° FoV) + SX CCD SuperStar mono (112.5°). Changing any value invalidates the caches; next scroll regenerates them.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
+    }
+
+    /// Computed summary line under the Horizon-exclusion slider —
+    /// tells the user how the number translates into image pixels per
+    /// camera so the physics stays tangible.
+    private var cropSummaryText: String {
+        // Recompute via explicit math instead of calling the helper
+        // so the text reacts to the in-progress @State values before
+        // onChange has flushed them into AppSettings.
+        let horizonAngle = 90.0 - horizonExclusion
+        let colorFrac = max(0.1, min(1.0, horizonAngle / (colorFov / 2)))
+        let monoFrac  = max(0.1, min(1.0, horizonAngle / (monoFov / 2)))
+        let colorConeDeg = (colorFov / 2) * colorFrac
+        let monoConeDeg  = (monoFov / 2) * monoFrac
+        let colorLine = String(
+            format: "Color keeps %d %% of the fisheye radius (≈ zenith ± %.0f°).",
+            Int(colorFrac * 100), colorConeDeg
+        )
+        let monoLine = String(
+            format: "Mono keeps %d %% of the fisheye radius (≈ zenith ± %.0f°).",
+            Int(monoFrac * 100), monoConeDeg
+        )
+        return colorLine + "\n" + monoLine
+    }
+
+    // MARK: - Advanced tab
+
+    private var advancedTab: some View {
+        Form {
+            Section("Fresh start") {
+                Text("These actions are destructive. Use only when you want to wipe state and restart from scratch — e.g. after a schema change or a bad ingest run. Supabase rows and the Keychain (Supabase URL / key) are preserved.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                ForEach(PurgeService.Scope.allCases, id: \.self) { scope in
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(scope.displayName)
+                                .font(.subheadline.weight(.semibold))
+                            Text(scope.explanation)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer()
+                        Button("Purge…") {
+                            purgeConfirmScope = scope
+                        }
+                        .disabled(isPurging)
+                        .tint(scope == .everything ? .red : .orange)
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+
+            if !purgeStatus.isEmpty {
+                Section {
+                    Text(purgeStatus)
+                        .font(.caption)
+                        .foregroundStyle(purgeStatus.contains("failed") ? .red : .secondary)
+                        .textSelection(.enabled)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .alert(
+            item: $purgeConfirmScope
+        ) { scope in
+            Alert(
+                title: Text("Purge \(scope.displayName)?"),
+                message: Text(scope.explanation + "\n\nThis cannot be undone."),
+                primaryButton: .destructive(Text("Purge")) {
+                    runPurge(scope)
+                },
+                secondaryButton: .cancel()
+            )
+        }
+    }
+
+    private func runPurge(_ scope: PurgeService.Scope) {
+        isPurging = true
+        purgeStatus = "Purging \(scope.displayName.lowercased())…"
+        Task {
+            let summary = await PurgeService.purge(scope)
+            purgeStatus = summary
+            isPurging = false
+        }
     }
 
     // MARK: - Supabase tab

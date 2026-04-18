@@ -4,6 +4,23 @@
 
 **Version:** 0.2.0 (pre-MVP — ingest pipeline usable, UI minimal)
 **Status:** Active development, v1 MVP targeted
+
+## Rating semantics — zenith cone, not full hemisphere
+
+Allsky frames cover 180° but rating them as "the whole sky" is the wrong mental model for astrophotography. The horizon ring below ~30° elevation is dominated by atmospheric extinction (5–6× longer optical path at 10° altitude vs zenith), distant cloud bands, ground-level light pollution, and tree / building silhouette — none of which say anything about whether the telescope's current field of view is observable. Even worse, a long exposure (5 min, 1 min) can drift clouds through the horizon ring while the zenith cone the scope is pointed at stays clear the whole time.
+
+The curator therefore rates only the **zenith cone**. Every frame is cropped to an inner circle whose radius is derived from:
+
+```
+crop_fraction = (90° − horizon_exclusion°) / (FoV° / 2)
+```
+
+assuming an equidistant fisheye projection. The default horizon-exclusion elevation is 30°, which for the Rheine rig resolves to:
+
+- **ZWO ASI676MC color allsky (176° FoV)** → keeps 68 % of the fisheye radius, zenith ± 60° cone
+- **SX CCD SuperStar mono (112.5° FoV)** → already tops out above 33° elevation, no crop
+
+Both the matrix thumbnail and the Apple Vision embedding consume the same cropped image — so what the curator sees and what the classifier learns are the same signal. Values live in **Preferences → Camera → Field of view + zenith crop** and can be tuned per setup; changing them invalidates the thumbnail / embedding caches which get rebuilt lazily on next scroll.
 **License:** Personal / TBD
 
 ---

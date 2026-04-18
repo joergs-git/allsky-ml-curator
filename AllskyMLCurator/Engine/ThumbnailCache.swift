@@ -57,15 +57,18 @@ final class ThumbnailCache: @unchecked Sendable {
     // MARK: - Public API
 
     /// Fast path: returns the cached thumbnail if available (memory
-    /// hit or disk hit). Returns `nil` when the thumbnail has not been
-    /// generated yet — caller should schedule `generate(for:)` and
-    /// show a placeholder tile in the meantime.
-    func cached(for imagePath: String) -> NSImage? {
-        let key = cacheKey(for: imagePath) as NSString
+    /// hit or disk hit). The cache key includes the camera type so
+    /// color and mono crops never collide, and a crop-fraction tag
+    /// so changing Preferences → Camera → Horizon exclusion gives a
+    /// fresh cache rather than stale images.
+    func cached(
+        for imagePath: String, cameraType: CameraType
+    ) -> NSImage? {
+        let key = cacheKey(for: imagePath, cameraType: cameraType) as NSString
         if let hit = memoryCache.object(forKey: key) {
             return hit
         }
-        let url = diskURL(for: imagePath)
+        let url = diskURL(for: imagePath, cameraType: cameraType)
         guard FileManager.default.fileExists(atPath: url.path),
               let image = NSImage(contentsOf: url)
         else { return nil }
@@ -73,17 +76,16 @@ final class ThumbnailCache: @unchecked Sendable {
         return image
     }
 
-    /// Generate (or re-use) the thumbnail. Safe to call concurrently
-    /// from the UI layer — in-flight requests for the same path share
-    /// a single task, and global concurrency is capped at
-    /// `maxConcurrentGenerations` so SwiftUI's LazyVGrid can fire
-    /// hundreds of `.task` blocks at once during a fast scroll
-    /// without saturating the SMB connection.
-    func generate(for imagePath: String) async -> NSImage? {
-        // Fast check before touching the generation lock.
-        if let hit = cached(for: imagePath) { return hit }
+    /// Generate (or re-use) the thumbnail. Runs the same
+    /// `SkyDiskMask` the ML embedding uses, so "what you see is what
+    /// you train on" — the tile shows only the zenith cone and the
+    /// horizon ring is neutralised.
+    func generate(
+        for imagePath: String, cameraType: CameraType
+    ) async -> NSImage? {
+        if let hit = cached(for: imagePath, cameraType: cameraType) { return hit }
 
-        let key = cacheKey(for: imagePath)
+        let key = cacheKey(for: imagePath, cameraType: cameraType)
         if let existing = inflight.withLock({ $0[key] }) {
             return await existing.value
         }
@@ -92,74 +94,116 @@ final class ThumbnailCache: @unchecked Sendable {
             defer { inflight.withLock { $0[key] = nil } }
             await generationSemaphore.acquire()
             defer { Task { await generationSemaphore.release() } }
-            return await generateOnWorker(for: imagePath)
+            return await generateOnWorker(
+                for: imagePath, cameraType: cameraType
+            )
         }
         inflight.withLock { $0[key] = task }
         return await task.value
     }
 
-    /// Convenience: ensure thumbnails exist for a batch of paths.
-    /// Runs serially on a detached task so it doesn't saturate the
-    /// UI queue or the SSD.
-    func warmUp(paths: [String]) async {
-        for path in paths {
-            _ = await generate(for: path)
-        }
-    }
-
     // MARK: - Generation
 
-    private func generateOnWorker(for imagePath: String) async -> NSImage? {
+    private func generateOnWorker(
+        for imagePath: String, cameraType: CameraType
+    ) async -> NSImage? {
         let sourceURL = URL(fileURLWithPath: imagePath)
-        let destination = diskURL(for: imagePath)
+        let destination = diskURL(for: imagePath, cameraType: cameraType)
 
-        // Another instance may have written the sidecar between the
-        // `cached(for:)` miss and this point — re-check to avoid doing
-        // the work twice.
         if let onDisk = NSImage(contentsOf: destination) {
-            memoryCache.setObject(onDisk, forKey: cacheKey(for: imagePath) as NSString)
+            memoryCache.setObject(
+                onDisk,
+                forKey: cacheKey(for: imagePath, cameraType: cameraType) as NSString
+            )
             return onDisk
         }
 
-        guard let source = CGImageSourceCreateWithURL(
-            sourceURL as CFURL, nil
-        ) else { return nil }
+        // SkyDiskMask wants a full-resolution CGImage so the geometry
+        // values (center_x/y + radius) are expressed in the camera's
+        // native pixel space. Loading the original is slow on SMB —
+        // the detached task + 4-slot semaphore in this class bound
+        // the damage.
+        guard let source = CGImageSourceCreateWithURL(sourceURL as CFURL, nil),
+              let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil)
+        else { return nil }
 
-        let thumbnailOptions: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform:   true,
-            kCGImageSourceThumbnailMaxPixelSize:          Self.size * 2  // retina
-        ]
-        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(
-            source, 0, thumbnailOptions as CFDictionary
-        ) else { return nil }
+        let geometry = SkyDiskMask.Geometry.fromSettings(for: cameraType)
+        guard let masked = SkyDiskMask.apply(to: cgImage, geometry: geometry) else {
+            return nil
+        }
 
-        // Write HEIF to disk.
-        guard let dest = CGImageDestinationCreateWithURL(
+        // Resize to the cache target. The masked image is already
+        // square, so one uniform scale does the job.
+        guard let resized = Self.resize(masked, to: Int(Self.size)) else {
+            return nil
+        }
+
+        if let dest = CGImageDestinationCreateWithURL(
             destination as CFURL, UTType.heic.identifier as CFString, 1, nil
-        ) else { return nil }
-        let writeOptions: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: 0.8]
-        CGImageDestinationAddImage(dest, cgImage, writeOptions as CFDictionary)
-        CGImageDestinationFinalize(dest)
+        ) {
+            let writeOptions: [CFString: Any] = [
+                kCGImageDestinationLossyCompressionQuality: 0.8
+            ]
+            CGImageDestinationAddImage(dest, resized, writeOptions as CFDictionary)
+            CGImageDestinationFinalize(dest)
+        }
 
         let nsImage = NSImage(
-            cgImage: cgImage,
+            cgImage: resized,
             size: NSSize(width: Self.size, height: Self.size)
         )
-        memoryCache.setObject(nsImage, forKey: cacheKey(for: imagePath) as NSString)
+        memoryCache.setObject(
+            nsImage,
+            forKey: cacheKey(for: imagePath, cameraType: cameraType) as NSString
+        )
         return nsImage
+    }
+
+    /// Downscale a square `CGImage` to `side × side` pixels using a
+    /// neutral-grey context. Separate from SkyDiskMask so SkyDiskMask
+    /// can keep producing full-resolution output for the embedding
+    /// path (which does its own 224×224 resize via Vision).
+    private static func resize(_ image: CGImage, to side: Int) -> CGImage? {
+        guard side > 0 else { return nil }
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
+                      | CGBitmapInfo.byteOrder32Big.rawValue
+        guard let context = CGContext(
+            data: nil, width: side, height: side,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: colorSpace, bitmapInfo: bitmapInfo
+        ) else { return nil }
+        context.interpolationQuality = .high
+        context.setFillColor(CGColor(red: 0.5, green: 0.5, blue: 0.5, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: side, height: side))
+        context.draw(
+            image,
+            in: CGRect(x: 0, y: 0, width: side, height: side)
+        )
+        return context.makeImage()
     }
 
     // MARK: - Cache key + paths
 
-    private func cacheKey(for imagePath: String) -> String {
-        let digest = SHA256.hash(data: Data(imagePath.utf8))
+    /// Key = SHA-256 over `{path}|{camera}|c{cropPercent}`. Different
+    /// camera types or crop fractions produce different keys so the
+    /// old cache files stay on disk but aren't used (orphaned until
+    /// the user purges `~/Library/Caches/AllskyMLCurator`).
+    private func cacheKey(
+        for imagePath: String, cameraType: CameraType
+    ) -> String {
+        let fraction = AppSettings.shared.zenithCropFraction(for: cameraType)
+        let cropTag = String(format: "c%03d", Int((fraction * 1000).rounded()))
+        let material = "\(imagePath)|\(cameraType.rawValue)|\(cropTag)"
+        let digest = SHA256.hash(data: Data(material.utf8))
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
-    private func diskURL(for imagePath: String) -> URL {
+    private func diskURL(
+        for imagePath: String, cameraType: CameraType
+    ) -> URL {
         Self.cacheDirectory
-            .appendingPathComponent(cacheKey(for: imagePath))
+            .appendingPathComponent(cacheKey(for: imagePath, cameraType: cameraType))
             .appendingPathExtension("heic")
     }
 
