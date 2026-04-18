@@ -74,6 +74,15 @@ final class EmbeddingPipeline: @unchecked Sendable {
 
     // MARK: - Public API
 
+    /// Remove the cached `.fp` sidecar for one image path. Silent
+    /// when nothing is cached. Used by the delete-image path so an
+    /// orphan embedding doesn't sit in the cache forever after the
+    /// image row it described is gone.
+    func purgeCache(for imagePath: String) {
+        let url = diskURL(for: imagePath)
+        try? FileManager.default.removeItem(at: url)
+    }
+
     /// Fast existence check that does not read / decode the sidecar.
     /// Used by coverage polling — reading the whole 768-float blob is
     /// ~ms per frame and starves the main thread when a loop fires it

@@ -75,6 +75,17 @@ struct MatrixView: View {
     /// prefix key is pressed twice.
     @State private var pendingConfidence: Int?
 
+    /// Set by ⌘⌫ / Delete. Holds the IDs the user asked to remove
+    /// plus their count, and drives the confirmation alert. `nil`
+    /// means no deletion pending.
+    @State private var deletePrompt: DeletePrompt?
+
+    struct DeletePrompt: Identifiable {
+        let id = UUID()
+        let ids: [Int64]
+        var count: Int { ids.count }
+    }
+
     // MARK: - Derived indices
 
     private var cursorIndex: Int {
@@ -149,6 +160,25 @@ struct MatrixView: View {
             .onKeyPress(phases: [.down, .repeat]) { press in
                 handleKey(press, proxy: proxy)
             }
+            .alert(item: $deletePrompt) { prompt in
+                Alert(
+                    title: Text("Remove \(prompt.count) image\(prompt.count == 1 ? "" : "s") from the library?"),
+                    message: Text("The image index row, every label, every prediction, and the cached thumbnail + embedding sidecar will be deleted locally. Supabase rows stay — re-ingest would push them back. This cannot be undone locally without re-ingest."),
+                    primaryButton: .destructive(Text("Remove")) {
+                        confirmDelete(prompt.ids)
+                    },
+                    secondaryButton: .cancel()
+                )
+            }
+        }
+    }
+
+    // MARK: - Deletion
+
+    private func confirmDelete(_ ids: [Int64]) {
+        Task {
+            _ = await ImageLibrary.shared.deleteImages(ids)
+            await onMutation()
         }
     }
 
@@ -348,8 +378,22 @@ struct MatrixView: View {
                     proxy.scrollTo(last.id, anchor: .center)
                 }
                 return .handled
-            default: return .ignored
+            default: break
             }
+        }
+
+        // ⌘⌫ (Cmd+Backspace) — the macOS idiom for "delete the
+        // selected items". Confirms via alert; no silent destructive
+        // action. Also accepts bare ⌫ so a curator with muscle memory
+        // from Finder / Mail doesn't have to learn a different
+        // combo. A selection is required — we don't delete a single
+        // cursor tile that isn't selected.
+        if press.key == .delete || press.key == .deleteForward {
+            if !selectedIds.isEmpty {
+                deletePrompt = DeletePrompt(ids: Array(selectedIds))
+                return .handled
+            }
+            return .ignored
         }
 
         if press.key == .return {

@@ -301,6 +301,18 @@ final class ThumbnailCache: @unchecked Sendable {
         }
     }
 
+    // MARK: - Single-frame purge
+
+    /// Remove one image's cached HEIC + memory entry so a subsequent
+    /// database delete doesn't leave orphan files in the cache dir.
+    /// Silent if nothing was cached.
+    func purgeCache(for imagePath: String, cameraType: CameraType) {
+        let key = cacheKey(for: imagePath, cameraType: cameraType)
+        memoryCache.removeObject(forKey: key as NSString)
+        let url = diskURL(for: imagePath, cameraType: cameraType)
+        try? FileManager.default.removeItem(at: url)
+    }
+
     // MARK: - Cache key + paths
 
     /// Key = SHA-256 over `{path}|{camera}|c{cropPercent}`. Different

@@ -139,6 +139,65 @@ final class ImageLibrary: ObservableObject {
         }) ?? []
     }
 
+    // MARK: - Removal
+
+    /// Delete the given image rows from the local index and purge
+    /// their cached sidecars (thumbnail HEIC + Vision FeaturePrint).
+    /// The `images` table has `onDelete: .cascade` on `labels` +
+    /// `predictions`, so every derived row follows automatically.
+    ///
+    /// Supabase rows on `ml_training_samples` are **not** touched —
+    /// they're upserted by `image_path`, so the canonical rating
+    /// history on the server survives a local purge. Re-ingesting
+    /// the same file and re-rating would push an UPDATE, not a
+    /// duplicate INSERT.
+    ///
+    /// Returns the actual delete count so callers can report "10 of
+    /// 12 removed" when some rows had already been deleted by another
+    /// writer.
+    @discardableResult
+    func deleteImages(_ imageIds: [Int64]) async -> Int {
+        guard !imageIds.isEmpty else { return 0 }
+
+        // Read the paths + camera sources BEFORE delete so we can
+        // purge the right HEIC + .fp sidecars afterwards.
+        let reader = Database.shared.reader
+        let doomed: [(path: String, camera: CameraType)] = (
+            try? await reader.read { db in
+                try ImageRecord
+                    .filter(imageIds.contains(Column("id")))
+                    .fetchAll(db)
+                    .compactMap { image in
+                        (image.filePath, image.cameraSource.cameraType)
+                    }
+            }
+        ) ?? []
+
+        // Single-transaction delete; FK cascade takes labels +
+        // predictions with it.
+        var deletedCount = 0
+        do {
+            try await Database.shared.writer.write { db in
+                deletedCount = try ImageRecord
+                    .filter(imageIds.contains(Column("id")))
+                    .deleteAll(db)
+            }
+        } catch {
+            NSLog("ImageLibrary.deleteImages failed: \(error)")
+            return 0
+        }
+
+        // Purge local cache files — harmless if the files don't
+        // exist; no SMB access needed.
+        for entry in doomed {
+            ThumbnailCache.shared.purgeCache(
+                for: entry.path, cameraType: entry.camera
+            )
+            EmbeddingPipeline.shared.purgeCache(for: entry.path)
+        }
+        return deletedCount
+    }
+
     // MARK: - Rating writes
 
     /// Apply a class rating (0-5) to one or more images. Existing
