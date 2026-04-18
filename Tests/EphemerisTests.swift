@@ -47,9 +47,11 @@ final class EphemerisTests: XCTestCase {
     }
 
     func testSunMaxAltitudeAtSolarNoonWinterSolstice() throws {
-        // 2024-12-21 solar noon at Rheine is approximately 11:45 UTC.
-        // Expected maximum altitude ≈ 90° − 52.17° − 23.44° = 14.39°.
-        let date = try makeDate(2024, 12, 21, 11, 45, 0)
+        // 2024-12-21 apparent solar noon at Rheine is approximately 11:29 UTC
+        // (mean solar noon at λ=7.25°E is 11:31 UTC; equation of time on the
+        // winter solstice is ≈ +2 min, so apparent noon arrives a couple
+        // of minutes earlier). Maximum altitude ≈ 90° − 52.17° − 23.44° = 14.39°.
+        let date = try makeDate(2024, 12, 21, 11, 30, 0)
         let reading = Ephemeris.sun(
             at: date, latitudeDeg: rheineLatDeg, longitudeDeg: rheineLonDeg
         )

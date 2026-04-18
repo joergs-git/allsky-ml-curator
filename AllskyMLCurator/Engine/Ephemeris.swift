@@ -80,13 +80,16 @@ enum Ephemeris {
             latitudeDeg: latitudeDeg
         )
 
-        // Illumination fraction from elongation (sun-moon angular distance).
+        // Phase angle = Sun-Moon-Observer angle.
+        //   full moon → elongation ≈ 180°, phase angle ≈ 0°,  illumination ≈ 1
+        //   new moon  → elongation ≈ 0°,   phase angle ≈ 180°, illumination ≈ 0
+        // Illumination fraction is the standard (1 + cos(phase_angle)) / 2.
         let elongation = angularSeparation(
             lon1Deg: sun.lon, lat1Deg: 0,
             lon2Deg: moonEcl.lon, lat2Deg: moonEcl.lat
         )
         let phaseAngleDeg = 180.0 - elongation
-        let illumination = 0.5 * (1.0 - cos(radians(phaseAngleDeg)))
+        let illumination = 0.5 * (1.0 + cos(radians(phaseAngleDeg)))
 
         return MoonReading(
             horizontal: horizontal,
