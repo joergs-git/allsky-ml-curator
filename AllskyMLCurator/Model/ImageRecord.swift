@@ -57,15 +57,15 @@ struct ImageRecord: Codable, Identifiable, Equatable, Sendable {
     // MARK: - Nested types
 
     enum CameraSource: String, Codable, Sendable {
-        case colorAllskyJpg = "color_allsky_jpg"
-        case monoZwoJpg     = "mono_zwo_jpg"
-        case monoZwoFits    = "mono_zwo_fits"
+        case colorAllskyJpg  = "color_allsky_jpg"
+        case monoAllskyJpg   = "mono_allsky_jpg"
+        case monoAllskyFits  = "mono_allsky_fits"
 
         /// Map back to the coarse two-bucket `CameraType` used in the UI.
         var cameraType: CameraType {
             switch self {
-            case .colorAllskyJpg:              return .color
-            case .monoZwoJpg, .monoZwoFits:    return .monochrome
+            case .colorAllskyJpg:                  return .color
+            case .monoAllskyJpg, .monoAllskyFits:  return .monochrome
             }
         }
     }

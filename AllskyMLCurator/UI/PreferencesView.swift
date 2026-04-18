@@ -134,7 +134,7 @@ struct PreferencesView: View {
             }
 
             Section {
-                Text("Fisheye center + radius describe the sky disk inside each rectangular frame. The Phase-2 SkyDiskMask pipeline will crop every image to this circle before feeding it to the ML embedding so burned-in overlay text can't influence the classifier. Defaults match the ZWO ASI676MC allsky (3552×3552 sensor, 3200 px image circle). For FITS, future revisions will auto-populate these values from the file header.")
+                Text("Fisheye center + radius describe the sky disk inside each rectangular frame. The Phase-2 SkyDiskMask pipeline will crop every image to this circle before feeding it to the ML embedding so burned-in overlay text can't influence the classifier. First-launch defaults match the Rheine rig (ZWO ASI676MC OSC + SX CCD SuperStar mono) and are only a starting point — edit the values above for a different camera. For FITS, future revisions will auto-populate these from the file header (NAXIS1/NAXIS2) when available.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

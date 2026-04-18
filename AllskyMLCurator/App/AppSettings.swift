@@ -49,10 +49,13 @@ final class AppSettings {
     //
     // Used by the Phase-2 SkyDiskMask to crop the circular sky area
     // from a rectangular allsky frame before feeding it to the ML
-    // embedding. Defaults match the user's ZWO ASI676MC allsky setup
-    // (3552×3552 sensor, 3200 px image-circle, centered). Monochrome
-    // defaults are placeholders until the ZWO ASI290 mono geometry is
-    // measured on a sample frame.
+    // embedding. The values are editable in Preferences → Camera so
+    // they are never truly hardcoded — the numbers below only kick
+    // in on first launch. Defaults are the user's Rheine rig:
+    //   - Color (OSC):  ZWO ASI676MC, 3552×3552 sensor,
+    //                   3200 px image circle, centered at (1776, 1776)
+    //   - Monochrome:   SX CCD SuperStar, 1392×1040 sensor,
+    //                   880 px image circle, centered at (696, 520)
 
     var colorFisheyeCenterXPx: Int {
         get { defaults.integer(forKey: Key.colorCenterX, default: 1776) }
@@ -70,17 +73,17 @@ final class AppSettings {
     }
 
     var monoFisheyeCenterXPx: Int {
-        get { defaults.integer(forKey: Key.monoCenterX, default: 968) }
+        get { defaults.integer(forKey: Key.monoCenterX, default: 696) }
         set { defaults.set(newValue, forKey: Key.monoCenterX) }
     }
 
     var monoFisheyeCenterYPx: Int {
-        get { defaults.integer(forKey: Key.monoCenterY, default: 548) }
+        get { defaults.integer(forKey: Key.monoCenterY, default: 520) }
         set { defaults.set(newValue, forKey: Key.monoCenterY) }
     }
 
     var monoFisheyeRadiusPx: Int {
-        get { defaults.integer(forKey: Key.monoRadius, default: 520) }
+        get { defaults.integer(forKey: Key.monoRadius, default: 440) }
         set { defaults.set(newValue, forKey: Key.monoRadius) }
     }
 

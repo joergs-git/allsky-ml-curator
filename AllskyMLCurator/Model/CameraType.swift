@@ -49,9 +49,9 @@ enum CameraType: String, Codable, CaseIterable, Sendable {
         case (.color, "jpg"), (.color, "jpeg"):
             return .colorAllskyJpg
         case (.monochrome, "jpg"), (.monochrome, "jpeg"):
-            return .monoZwoJpg
+            return .monoAllskyJpg
         case (.monochrome, "fit"), (.monochrome, "fits"):
-            return .monoZwoFits
+            return .monoAllskyFits
         default:
             return nil
         }
