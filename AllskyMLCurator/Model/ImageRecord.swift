@@ -45,6 +45,21 @@ struct ImageRecord: Codable, Identifiable, Equatable, Sendable {
     /// profile's daylight cutoff. Such frames never enter the training set.
     var isExcluded: Bool
 
+    // MARK: - Per-frame metadata (from the *_metadata.json sidecar)
+    //
+    // Populated during ingest when a sidecar is present. Unused when
+    // FITS header parsing lands (v1.1) — the corresponding FITS
+    // keywords will fill the same columns.
+
+    var exposureSec: Double?
+    var gain: Double?
+    var sensorTempC: Double?
+    /// `false` when the capture software's auto-exposure was still
+    /// hunting for the ADU target. Materially more reliable as a
+    /// "this frame is garbage" signal than the geometric sun-altitude
+    /// window alone.
+    var aeStable: Bool?
+
     // MARK: - Embedding cache
 
     var embeddingPath: String?

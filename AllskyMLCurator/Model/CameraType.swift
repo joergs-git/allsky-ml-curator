@@ -48,12 +48,54 @@ enum CameraType: String, Codable, CaseIterable, Sendable {
         switch (self, ext) {
         case (.color, "jpg"), (.color, "jpeg"):
             return .colorAllskyJpg
+        case (.color, "fit"), (.color, "fits"):
+            // Color FITS lands on disk as a distinct raw-Bayer record
+            // in Phase 1.1+. Until the FITS reader is ported the scan
+            // filter also keeps these files out of the ingest set.
+            return .colorAllskyJpg       // placeholder mapping for now
         case (.monochrome, "jpg"), (.monochrome, "jpeg"):
             return .monoAllskyJpg
         case (.monochrome, "fit"), (.monochrome, "fits"):
             return .monoAllskyFits
         default:
             return nil
+        }
+    }
+}
+
+/// Image encoding the user wants to ingest for a given run.
+///
+/// Raw FITS is strictly better for training — no burned-in text
+/// overlay, 16-bit dynamic range, camera-native Bayer pattern. JPG
+/// is convenient and works today; FITS needs the `cfitsio` bridge
+/// that ships with Phase 1.1.
+enum ImageFormat: String, CaseIterable, Sendable {
+    case jpg  = "jpg"
+    case fits = "fits"
+
+    var displayName: String {
+        switch self {
+        case .jpg:  return "JPG"
+        case .fits: return "FITS (raw — v1.1)"
+        }
+    }
+
+    /// File extensions matched by this format during the scan.
+    var extensions: Set<String> {
+        switch self {
+        case .jpg:  return ["jpg", "jpeg"]
+        case .fits: return ["fit", "fits"]
+        }
+    }
+
+    /// FITS loading is not wired up yet. The picker still shows it so
+    /// users can choose the format they want and the scan filter
+    /// honours it; actual embedding + thumbnailing for FITS arrives
+    /// with the cfitsio bridge port.
+    var isSupportedInCurrentBuild: Bool {
+        switch self {
+        case .jpg:  return true
+        case .fits: return false
         }
     }
 }

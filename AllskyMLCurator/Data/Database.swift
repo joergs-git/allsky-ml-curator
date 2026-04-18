@@ -150,6 +150,27 @@ final class Database {
             }
         }
 
+        // Per-frame metadata picked up from the `_metadata.json`
+        // sidecar during ingest. All optional — frames without a
+        // sidecar (or with an unparseable one) carry NULL.
+        migrator.registerMigration("v3_add_meta_fields") { db in
+            let existing = Set((try? db.columns(in: "images"))?.map(\.name) ?? [])
+            try db.alter(table: "images") { t in
+                if !existing.contains("exposureSec") {
+                    t.add(column: "exposureSec", .double)
+                }
+                if !existing.contains("gain") {
+                    t.add(column: "gain", .double)
+                }
+                if !existing.contains("sensorTempC") {
+                    t.add(column: "sensorTempC", .double)
+                }
+                if !existing.contains("aeStable") {
+                    t.add(column: "aeStable", .boolean)
+                }
+            }
+        }
+
         return migrator
     }
 }

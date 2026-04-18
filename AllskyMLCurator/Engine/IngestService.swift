@@ -32,18 +32,23 @@ final class IngestService: ObservableObject {
     @Published private(set) var reflectionFlagged: Int = 0
     @Published private(set) var transitionalFlagged: Int = 0
     @Published private(set) var enrichedWithWeather: Int = 0
+    @Published private(set) var enrichedWithMeta: Int = 0
     @Published private(set) var statusMessage: String = "idle"
     @Published private(set) var isRunning: Bool = false
     @Published private(set) var lastError: String?
 
     // MARK: - Entry point
 
-    /// Ingest every supported image in `folderURL` as captures from the
-    /// given `cameraType`. Observatory coordinates come from
-    /// `AppSettings.shared` (Preferences → Observatory).
+    /// Ingest every supported image in `folderURL` as captures from
+    /// the given `cameraType` + `imageFormat`. The scan filter uses
+    /// `imageFormat` to decide which file extensions to pick up, so a
+    /// parent folder containing sibling `jpg/` and `fits/` subtrees
+    /// can be scanned cleanly without doubling the index. Observatory
+    /// coordinates come from `AppSettings.shared`.
     func ingestFolder(
         _ folderURL: URL,
         cameraType: CameraType,
+        imageFormat: ImageFormat,
         dryRun: Bool
     ) async {
         guard !isRunning else { return }
@@ -62,7 +67,7 @@ final class IngestService: ObservableObject {
         statusMessage = "scanning \(folderURL.lastPathComponent)…"
 
         do {
-            let files = scanFolder(folderURL)
+            let files = scanFolder(folderURL, imageFormat: imageFormat)
             totalFiles = files.count
             statusMessage = "processing \(files.count) files…"
 
@@ -117,10 +122,11 @@ final class IngestService: ObservableObject {
     }
 
     /// Walk `folderURL` recursively and return every supported image
-    /// file, sorted by path so the UI counter advances in a stable
-    /// order. Directory subtrees that match `shouldSkipDirectory` are
-    /// pruned entirely via `enumerator.skipDescendants()`.
-    private func scanFolder(_ folderURL: URL) -> [URL] {
+    /// file whose extension matches `imageFormat`. Directory subtrees
+    /// that match `shouldSkipDirectory` are pruned entirely via
+    /// `enumerator.skipDescendants()`. Results are sorted by path so
+    /// the UI counter advances in a stable order.
+    private func scanFolder(_ folderURL: URL, imageFormat: ImageFormat) -> [URL] {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(
             at: folderURL,
@@ -129,6 +135,8 @@ final class IngestService: ObservableObject {
             ],
             options: [.skipsHiddenFiles]
         ) else { return [] }
+
+        let allowedExtensions = imageFormat.extensions
 
         var results: [URL] = []
         for case let url as URL in enumerator {
@@ -145,7 +153,7 @@ final class IngestService: ObservableObject {
 
             guard values?.isRegularFile == true else { continue }
             let ext = url.pathExtension.lowercased()
-            guard Self.supportedExtensions.contains(ext) else { continue }
+            guard allowedExtensions.contains(ext) else { continue }
             results.append(url)
         }
         return results.sorted { $0.path < $1.path }
@@ -175,13 +183,16 @@ final class IngestService: ObservableObject {
             .fetchCloudwatcherReadings(from: lower, to: upper)
     }
 
-    /// Timestamp range covered by the given files, based on filename
-    /// parsing + modification-date fallback.
+    /// Timestamp range covered by the given files. Fast path: filename
+    /// parsing + modification-date fallback (meta JSON reads during a
+    /// range probe would double the disk traffic for no benefit — a
+    /// ±10 min widening downstream absorbs the small deltas between
+    /// filename and sidecar time).
     private func timeRange(of files: [URL]) -> ClosedRange<Date>? {
         var earliest: Date?
         var latest: Date?
         for url in files {
-            guard let ts = timestamp(for: url) else { continue }
+            guard let ts = timestamp(for: url, meta: nil) else { continue }
             earliest = min(earliest ?? ts, ts)
             latest   = max(latest   ?? ts, ts)
         }
@@ -201,7 +212,10 @@ final class IngestService: ObservableObject {
             return
         }
 
-        guard let captureUtc = timestamp(for: fileURL) else {
+        let meta = MetaJsonReader.read(for: fileURL)
+        if meta != nil { enrichedWithMeta += 1 }
+
+        guard let captureUtc = timestamp(for: fileURL, meta: meta) else {
             skippedNoTimestamp += 1
             return
         }
@@ -214,7 +228,8 @@ final class IngestService: ObservableObject {
             cameraSource: cameraSource,
             cameraType: cameraType,
             captureUtc: captureUtc,
-            matchedReading: matchedReading
+            matchedReading: matchedReading,
+            meta: meta
         )
 
         if record.isExcluded { excluded += 1 }
@@ -232,14 +247,15 @@ final class IngestService: ObservableObject {
         inserted += 1
     }
 
-    /// Timestamp from filename if parseable, else file modification date.
-    private func timestamp(for url: URL) -> Date? {
-        if let date = FilenameTimestamp.parse(url.lastPathComponent) {
-            return date
-        }
-        let values = try? url.resourceValues(
-            forKeys: [.contentModificationDateKey]
-        )
+    /// Timestamp priority: sidecar `time` (authoritative UTC epoch)
+    /// → filename regex → file modification date.
+    private func timestamp(
+        for url: URL,
+        meta: MetaJsonReader.Metadata?
+    ) -> Date? {
+        if let meta { return meta.captureUtc }
+        if let date = FilenameTimestamp.parse(url.lastPathComponent) { return date }
+        let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
         return values?.contentModificationDate
     }
 
@@ -268,7 +284,8 @@ final class IngestService: ObservableObject {
         cameraSource: ImageRecord.CameraSource,
         cameraType: CameraType,
         captureUtc: Date,
-        matchedReading: SupabaseClient.CloudwatcherReading?
+        matchedReading: SupabaseClient.CloudwatcherReading?,
+        meta: MetaJsonReader.Metadata?
     ) -> ImageRecord {
         let latitude  = AppSettings.shared.latitudeDeg
         let longitude = AppSettings.shared.longitudeDeg
@@ -295,13 +312,18 @@ final class IngestService: ObservableObject {
             )
         )
 
-        // Geometric transitional pre-score — histogram refinement runs
-        // later, when the embedding pipeline opens the actual file.
-        let transitionalScoreGeometric: Double =
+        // Transitional risk: geometric fallback (sun in twilight window)
+        // plus an authoritative override from the sidecar — when the
+        // capture software reports `stable_exposure == 0`, the frame is
+        // mid-AE-hunt and reliably bad.
+        let geometricInWindow =
             TransitionalDetector.transitionWindowDeg.contains(sun.horizontal.altitudeDeg)
             && cameraType.dayCapable
-            ? 0.5
-            : 0.0
+        let aeUnstable = meta?.stableExposure == false
+        let transitionalScore: Double = {
+            if aeUnstable { return 1.0 }
+            return geometricInWindow ? 0.5 : 0.0
+        }()
 
         return ImageRecord(
             id: nil,
@@ -317,8 +339,12 @@ final class IngestService: ObservableObject {
             moonAzDeg: moon.horizontal.azimuthDeg,
             moonPhase: moon.illumination,
             reflectionRiskScore: reflectionScore,
-            transitionalRiskScore: transitionalScoreGeometric,
+            transitionalRiskScore: transitionalScore,
             isExcluded: isExcluded,
+            exposureSec: meta?.exposureSec,
+            gain: meta?.gain,
+            sensorTempC: meta?.sensorTempC,
+            aeStable: meta.map { $0.stableExposure },
             embeddingPath: nil,
             embeddingRevision: 0,
             createdAt: Date()
@@ -356,6 +382,7 @@ final class IngestService: ObservableObject {
         reflectionFlagged = 0
         transitionalFlagged = 0
         enrichedWithWeather = 0
+        enrichedWithMeta = 0
     }
 
     // MARK: - Cancellation

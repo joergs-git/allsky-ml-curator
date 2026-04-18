@@ -45,6 +45,12 @@ final class AppSettings {
         set { defaults.set(newValue, forKey: Key.lastCameraTypeRaw) }
     }
 
+    /// Last image format selected (raw value of `ImageFormat`).
+    var lastImageFormatRaw: String? {
+        get { defaults.string(forKey: Key.lastImageFormatRaw) }
+        set { defaults.set(newValue, forKey: Key.lastImageFormatRaw) }
+    }
+
     // MARK: - Allsky fisheye geometry (per camera type)
     //
     // Used by the Phase-2 SkyDiskMask to crop the circular sky area
@@ -129,6 +135,7 @@ final class AppSettings {
         static let longitude = "observatory.longitudeDeg"
         static let lastFolder = "ingest.lastFolderPath"
         static let lastCameraTypeRaw = "ingest.lastCameraTypeRaw"
+        static let lastImageFormatRaw = "ingest.lastImageFormatRaw"
         static let colorCenterX = "camera.color.centerXPx"
         static let colorCenterY = "camera.color.centerYPx"
         static let colorRadius  = "camera.color.radiusPx"

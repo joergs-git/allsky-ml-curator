@@ -14,6 +14,7 @@ struct ContentView: View {
 
     @State private var selectedFolder: URL?
     @State private var cameraType: CameraType = .color
+    @State private var imageFormat: ImageFormat = .jpg
     @State private var dryRun: Bool = true
 
     var body: some View {
@@ -147,6 +148,28 @@ struct ContentView: View {
                 Spacer()
             }
 
+            HStack {
+                Text("Format:")
+                    .frame(width: 70, alignment: .trailing)
+                Picker("", selection: $imageFormat) {
+                    ForEach(ImageFormat.allCases, id: \.self) { fmt in
+                        Text(fmt.displayName)
+                            .tag(fmt)
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 220)
+                .onChange(of: imageFormat) { _, newValue in
+                    AppSettings.shared.lastImageFormatRaw = newValue.rawValue
+                }
+                if !imageFormat.isSupportedInCurrentBuild {
+                    Text("(indexed only — loading lands in v1.1)")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                Spacer()
+            }
+
             Toggle("Dry-run (scan + count only, no DB writes)", isOn: $dryRun)
 
             HStack {
@@ -187,7 +210,7 @@ struct ContentView: View {
             }
             GridRow {
                 counterCell("Weather-enriched", value: ingest.enrichedWithWeather)
-                Color.clear
+                counterCell("Meta-sidecar found",  value: ingest.enrichedWithMeta)
             }
         }
     }
@@ -229,6 +252,10 @@ struct ContentView: View {
            let saved = CameraType(rawValue: raw) {
             cameraType = saved
         }
+        if let raw = AppSettings.shared.lastImageFormatRaw,
+           let saved = ImageFormat(rawValue: raw) {
+            imageFormat = saved
+        }
         // Folder access from the last session is not persisted in v1 —
         // the path is shown as a breadcrumb so the user can re-pick it
         // with one click (⌘O).
@@ -243,6 +270,7 @@ struct ContentView: View {
             await ingest.ingestFolder(
                 folder,
                 cameraType: cameraType,
+                imageFormat: imageFormat,
                 dryRun: dryRun
             )
         }
