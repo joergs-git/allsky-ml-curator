@@ -28,6 +28,11 @@ struct ImageRecord: Codable, Identifiable, Equatable, Sendable {
     /// within the configured time window.
     var supabaseReadingId: Int64?
 
+    /// FK into `meteoblue_hourly.id` (astro-weather Supabase), filled
+    /// when ingest finds a forecast hour within ±30 min of the frame.
+    /// Drives the forecast-aux features in `FeatureVectorBuilder`.
+    var meteoblueHourId: Int64?
+
     // MARK: - Ephemeris (sun / moon, body-agnostic)
 
     var sunAltDeg: Double
@@ -103,6 +108,7 @@ extension ImageRecord: FetchableRecord, MutablePersistableRecord {
         static let captureUtc            = Column(CodingKeys.captureUtc)
         static let timeOfDay             = Column(CodingKeys.timeOfDay)
         static let supabaseReadingId     = Column(CodingKeys.supabaseReadingId)
+        static let meteoblueHourId       = Column(CodingKeys.meteoblueHourId)
         static let sunAltDeg             = Column(CodingKeys.sunAltDeg)
         static let sunAzDeg              = Column(CodingKeys.sunAzDeg)
         static let moonAltDeg            = Column(CodingKeys.moonAltDeg)

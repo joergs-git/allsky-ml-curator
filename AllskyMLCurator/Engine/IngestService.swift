@@ -166,22 +166,40 @@ final class IngestService: ObservableObject {
     /// full reading row (not just the timestamp) when it finds a match.
     private var latestWeatherReadings: [SupabaseClient.CloudwatcherReading] = []
 
-    /// Fetch one batch of Supabase `cloudwatcher_readings` covering the
-    /// folder's time range, so per-file lookup is O(n) over an in-memory
-    /// array rather than n network round-trips. No-op when Supabase is
-    /// not configured.
+    /// Cache of the meteoblue-forecast hours covering the ingest batch.
+    /// Updated alongside `latestWeatherReadings` and queried per frame
+    /// via `nearestMeteoblueHour(to:)`.
+    private var latestMeteoblueHours: [SupabaseClient.MeteoblueHour] = []
+
+    /// Fetch one batch of Supabase `cloudwatcher_readings` + the
+    /// matching `meteoblue_hourly` rows covering the folder's time
+    /// range, so per-file lookups are O(n) over an in-memory array
+    /// rather than 2n network round-trips. No-op when Supabase is not
+    /// configured. Meteoblue failures are swallowed — forecast
+    /// enrichment is nice-to-have, not required for ingest to succeed.
     private func buildWeatherIndex(forFiles files: [URL]) async throws {
         latestWeatherReadings = []
+        latestMeteoblueHours = []
         guard SupabaseClient.shared.loadConfig() != nil else { return }
         guard let range = timeRange(of: files) else { return }
 
         statusMessage = "fetching weather for \(range.lowerBound.iso8601Short()) … \(range.upperBound.iso8601Short())"
 
-        // Widen ±10 min so frames near the edges still find a neighbor.
-        let lower = range.lowerBound.addingTimeInterval(-600)
-        let upper = range.upperBound.addingTimeInterval(600)
+        // Widen ±10 min for cloudwatcher (5-min cadence) and ±30 min
+        // for meteoblue (hourly) so frames at the edges still match.
+        let cwLower = range.lowerBound.addingTimeInterval(-600)
+        let cwUpper = range.upperBound.addingTimeInterval(600)
         latestWeatherReadings = try await SupabaseClient.shared
-            .fetchCloudwatcherReadings(from: lower, to: upper)
+            .fetchCloudwatcherReadings(from: cwLower, to: cwUpper)
+
+        let mbLower = range.lowerBound.addingTimeInterval(-1800)
+        let mbUpper = range.upperBound.addingTimeInterval(1800)
+        do {
+            latestMeteoblueHours = try await SupabaseClient.shared
+                .fetchMeteoblueHours(from: mbLower, to: mbUpper)
+        } catch {
+            latestMeteoblueHours = []
+        }
     }
 
     /// Timestamp range covered by the given files. Fast path: filename
@@ -224,12 +242,15 @@ final class IngestService: ObservableObject {
         let matchedReading = nearestReading(to: captureUtc)
         if matchedReading != nil { enrichedWithWeather += 1 }
 
+        let matchedMeteoblueId = nearestMeteoblueHour(to: captureUtc)
+
         let record = classify(
             filePath: fileURL.path,
             cameraSource: cameraSource,
             cameraType: cameraType,
             captureUtc: captureUtc,
             matchedReading: matchedReading,
+            meteoblueHourId: matchedMeteoblueId,
             meta: meta
         )
 
@@ -278,6 +299,26 @@ final class IngestService: ObservableObject {
         return bestDelta <= 300 ? best : nil
     }
 
+    /// Nearest meteoblue-forecast hour within ±30 min of the frame.
+    /// Forecasts are hourly so the matching window is correspondingly
+    /// wider than the cloudwatcher ±5 min. Returns just the row id —
+    /// the aux features read back through the FK later.
+    private func nearestMeteoblueHour(
+        to captureUtc: Date
+    ) -> Int64? {
+        guard !latestMeteoblueHours.isEmpty else { return nil }
+        var bestId: Int64?
+        var bestDelta = TimeInterval.greatestFiniteMagnitude
+        for hour in latestMeteoblueHours {
+            let delta = abs(hour.timestamp.timeIntervalSince(captureUtc))
+            if delta < bestDelta {
+                bestDelta = delta
+                bestId = hour.id
+            }
+        }
+        return bestDelta <= 1800 ? bestId : nil
+    }
+
     // MARK: - Classification
 
     private func classify(
@@ -286,6 +327,7 @@ final class IngestService: ObservableObject {
         cameraType: CameraType,
         captureUtc: Date,
         matchedReading: SupabaseClient.CloudwatcherReading?,
+        meteoblueHourId: Int64?,
         meta: MetaJsonReader.Metadata?
     ) -> ImageRecord {
         let latitude  = AppSettings.shared.latitudeDeg
@@ -334,6 +376,7 @@ final class IngestService: ObservableObject {
             captureUtc: captureUtc,
             timeOfDay: sun.timeOfDay,
             supabaseReadingId: matchedReading?.id,
+            meteoblueHourId: meteoblueHourId,
             sunAltDeg: sun.horizontal.altitudeDeg,
             sunAzDeg: sun.horizontal.azimuthDeg,
             moonAltDeg: moon.horizontal.altitudeDeg,

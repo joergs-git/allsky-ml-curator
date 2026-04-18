@@ -208,7 +208,7 @@ final class SyncEngine: ObservableObject {
             camera_source: image.cameraSource.rawValue,
             capture_utc: iso8601Formatter.string(from: image.captureUtc),
             cloudwatcher_reading_id: image.supabaseReadingId,
-            meteoblue_hour_id: nil,
+            meteoblue_hour_id: image.meteoblueHourId,
             sun_alt_deg: image.sunAltDeg,
             sun_az_deg: image.sunAzDeg,
             moon_alt_deg: image.moonAltDeg,
