@@ -70,7 +70,6 @@ final class Database {
                 t.column("filePath", .text).notNull().unique()
                 t.column("fileHashSha256", .text)
                 t.column("cameraSource", .text).notNull()
-                t.column("cameraProfileId", .text).notNull()
                 t.column("captureUtc", .datetime).notNull().indexed()
                 t.column("timeOfDay", .text).notNull()
                 t.column("supabaseReadingId", .integer)
@@ -134,6 +133,20 @@ final class Database {
                 t.column("classifierWeights", .blob).notNull()
                 t.column("accuracy5FoldCV", .double)
                 t.column("notes", .text)
+            }
+        }
+
+        // Pre-release schema pivot: an earlier draft carried a
+        // `cameraProfileId` column referencing the (now-retired)
+        // per-camera JSON profile system. Any dev DB created under
+        // v0.2.0 will have that column — drop it so the new Swift
+        // `ImageRecord` (without cameraProfileId) keeps inserting
+        // cleanly. Safe no-op when the column does not exist.
+        migrator.registerMigration("v2_drop_camera_profile_id") { db in
+            if try db.columns(in: "images").contains(where: { $0.name == "cameraProfileId" }) {
+                try db.alter(table: "images") { t in
+                    t.drop(column: "cameraProfileId")
+                }
             }
         }
 

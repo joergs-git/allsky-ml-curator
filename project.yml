@@ -42,10 +42,6 @@ targets:
       - path: AllskyMLCurator
         excludes:
           - "**/.DS_Store"
-      - path: Preferences/CameraProfiles
-        buildPhase: resources
-        excludes:
-          - "**/.DS_Store"
     dependencies:
       - package: GRDB
         product: GRDB

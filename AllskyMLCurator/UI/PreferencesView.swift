@@ -15,6 +15,15 @@ struct PreferencesView: View {
     @State private var latitude: Double  = AppSettings.shared.latitudeDeg
     @State private var longitude: Double = AppSettings.shared.longitudeDeg
 
+    // MARK: - Camera geometry state
+
+    @State private var colorCenterX: Int = AppSettings.shared.colorFisheyeCenterXPx
+    @State private var colorCenterY: Int = AppSettings.shared.colorFisheyeCenterYPx
+    @State private var colorRadius:  Int = AppSettings.shared.colorFisheyeRadiusPx
+    @State private var monoCenterX:  Int = AppSettings.shared.monoFisheyeCenterXPx
+    @State private var monoCenterY:  Int = AppSettings.shared.monoFisheyeCenterYPx
+    @State private var monoRadius:   Int = AppSettings.shared.monoFisheyeRadiusPx
+
     // MARK: - Supabase state
 
     @State private var supabaseUrl: String      = ""
@@ -26,10 +35,12 @@ struct PreferencesView: View {
         TabView {
             observatoryTab
                 .tabItem { Label("Observatory", systemImage: "location") }
+            cameraTab
+                .tabItem { Label("Camera", systemImage: "camera") }
             supabaseTab
                 .tabItem { Label("Supabase", systemImage: "externaldrive.connected.to.line.below") }
         }
-        .frame(minWidth: 620, minHeight: 420)
+        .frame(minWidth: 640, minHeight: 460)
         .onAppear(perform: loadSupabaseConfig)
     }
 
@@ -57,6 +68,73 @@ struct PreferencesView: View {
             }
             Section {
                 Text("Latitude / longitude are used to compute sun and moon ephemeris for every ingested frame. Default is the Rheine observatory.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    // MARK: - Camera tab
+
+    private var cameraTab: some View {
+        Form {
+            Section("Color (OSC) fisheye geometry") {
+                LabeledContent("Center X (px)") {
+                    TextField("", value: $colorCenterX, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 140)
+                        .onChange(of: colorCenterX) { _, new in
+                            AppSettings.shared.colorFisheyeCenterXPx = new
+                        }
+                }
+                LabeledContent("Center Y (px)") {
+                    TextField("", value: $colorCenterY, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 140)
+                        .onChange(of: colorCenterY) { _, new in
+                            AppSettings.shared.colorFisheyeCenterYPx = new
+                        }
+                }
+                LabeledContent("Radius (px)") {
+                    TextField("", value: $colorRadius, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 140)
+                        .onChange(of: colorRadius) { _, new in
+                            AppSettings.shared.colorFisheyeRadiusPx = new
+                        }
+                }
+            }
+
+            Section("Monochrome fisheye geometry") {
+                LabeledContent("Center X (px)") {
+                    TextField("", value: $monoCenterX, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 140)
+                        .onChange(of: monoCenterX) { _, new in
+                            AppSettings.shared.monoFisheyeCenterXPx = new
+                        }
+                }
+                LabeledContent("Center Y (px)") {
+                    TextField("", value: $monoCenterY, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 140)
+                        .onChange(of: monoCenterY) { _, new in
+                            AppSettings.shared.monoFisheyeCenterYPx = new
+                        }
+                }
+                LabeledContent("Radius (px)") {
+                    TextField("", value: $monoRadius, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 140)
+                        .onChange(of: monoRadius) { _, new in
+                            AppSettings.shared.monoFisheyeRadiusPx = new
+                        }
+                }
+            }
+
+            Section {
+                Text("Fisheye center + radius describe the sky disk inside each rectangular frame. The Phase-2 SkyDiskMask pipeline will crop every image to this circle before feeding it to the ML embedding so burned-in overlay text can't influence the classifier. Defaults match the ZWO ASI676MC allsky (3552×3552 sensor, 3200 px image circle). For FITS, future revisions will auto-populate these values from the file header.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

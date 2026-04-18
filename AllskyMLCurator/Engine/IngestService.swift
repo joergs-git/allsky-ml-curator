@@ -4,15 +4,17 @@ import SwiftUI
 
 /// Folder-based ingest for Phase 1.
 ///
-/// The user chooses any folder via `Cmd+O` (parity with AstroBlink's
-/// "Open folder" flow). The service walks the folder recursively for
-/// supported image extensions, parses a capture timestamp from every
-/// filename, matches each file to a `CameraProfile` picked by the user,
-/// and pre-computes ephemeris + reflection + geometric transitional
-/// risk scores. Supabase is used purely for *enrichment* — if
-/// credentials are configured, the service fetches cloudwatcher
-/// readings covering the folder's time range in a single batch and
-/// attaches the nearest match (within ±5 min) to each image.
+/// The user opens any folder via `Cmd+O` (parity with AstroBlink) and
+/// picks the camera type (Color / Monochrome). The service walks the
+/// folder recursively for supported image extensions, parses a capture
+/// timestamp from every filename (falling back to file mtime), and
+/// pre-computes ephemeris + reflection + geometric transitional risk
+/// scores for each frame.
+///
+/// Supabase is used purely for *enrichment* — if credentials are
+/// configured, the service fetches `cloudwatcher_readings` covering
+/// the folder's time range in a single batch and attaches the nearest
+/// match (within ±5 min) to every image.
 ///
 /// `dryRun = true` performs every step except the database write so
 /// the UI can preview counts before committing.
@@ -37,10 +39,11 @@ final class IngestService: ObservableObject {
     // MARK: - Entry point
 
     /// Ingest every supported image in `folderURL` as captures from the
-    /// camera described by `profileId`.
+    /// given `cameraType`. Observatory coordinates come from
+    /// `AppSettings.shared` (Preferences → Observatory).
     func ingestFolder(
         _ folderURL: URL,
-        profileId: String,
+        cameraType: CameraType,
         dryRun: Bool
     ) async {
         guard !isRunning else { return }
@@ -49,13 +52,6 @@ final class IngestService: ObservableObject {
         lastError = nil
         cancelToken = CancelToken()
         let token = cancelToken
-
-        guard let profile = CameraProfileStore.shared.profile(id: profileId) else {
-            statusMessage = "unknown camera profile"
-            lastError = "Camera profile '\(profileId)' not found in the bundle."
-            isRunning = false
-            return
-        }
 
         // Sandbox: keep the folder accessible for the duration of the run.
         let didStart = folderURL.startAccessingSecurityScopedResource()
@@ -70,7 +66,7 @@ final class IngestService: ObservableObject {
             totalFiles = files.count
             statusMessage = "processing \(files.count) files…"
 
-            let readingsIndex = try await buildWeatherIndex(forFiles: files)
+            try await buildWeatherIndex(forFiles: files)
             let dbWriter: DatabaseWriter? =
                 dryRun ? nil : Database.shared.writer
 
@@ -78,8 +74,7 @@ final class IngestService: ObservableObject {
                 try token.checkCancelled()
                 await processFile(
                     file,
-                    profile: profile,
-                    readingsIndex: readingsIndex,
+                    cameraType: cameraType,
                     dbWriter: dbWriter
                 )
                 processed += 1
@@ -108,8 +103,9 @@ final class IngestService: ObservableObject {
         "jpg", "jpeg", "fit", "fits"
     ]
 
-    /// Walk `folderURL` recursively and return every supported image file,
-    /// sorted by path so the UI counter advances in a stable order.
+    /// Walk `folderURL` recursively and return every supported image
+    /// file, sorted by path so the UI counter advances in a stable
+    /// order.
     private func scanFolder(_ folderURL: URL) -> [URL] {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(
@@ -131,30 +127,27 @@ final class IngestService: ObservableObject {
 
     // MARK: - Weather enrichment
 
-    /// Build a timestamp-keyed index of Supabase `cloudwatcher_readings`
-    /// covering the folder's time range, so per-file lookup is O(log n)
-    /// rather than n network round-trips. Returns an empty index when
-    /// Supabase is not configured (enrichment becomes a no-op).
-    private func buildWeatherIndex(
-        forFiles files: [URL]
-    ) async throws -> [Date] {
-        guard SupabaseClient.shared.loadConfig() != nil else { return [] }
-        guard let range = timeRange(of: files) else { return [] }
-
-        statusMessage = "fetching weather for \(range.lowerBound.iso8601Short()) … \(range.upperBound.iso8601Short())"
-
-        // Widen ±10 min so edge files still find a neighbor.
-        let lower = range.lowerBound.addingTimeInterval(-600)
-        let upper = range.upperBound.addingTimeInterval(600)
-        let readings = try await SupabaseClient.shared
-            .fetchCloudwatcherReadings(from: lower, to: upper)
-        latestWeatherReadings = readings
-        return readings.map(\.timestamp).sorted()
-    }
-
     /// Cache of the most recent fetch so `processFile` can look up the
     /// full reading row (not just the timestamp) when it finds a match.
     private var latestWeatherReadings: [SupabaseClient.CloudwatcherReading] = []
+
+    /// Fetch one batch of Supabase `cloudwatcher_readings` covering the
+    /// folder's time range, so per-file lookup is O(n) over an in-memory
+    /// array rather than n network round-trips. No-op when Supabase is
+    /// not configured.
+    private func buildWeatherIndex(forFiles files: [URL]) async throws {
+        latestWeatherReadings = []
+        guard SupabaseClient.shared.loadConfig() != nil else { return }
+        guard let range = timeRange(of: files) else { return }
+
+        statusMessage = "fetching weather for \(range.lowerBound.iso8601Short()) … \(range.upperBound.iso8601Short())"
+
+        // Widen ±10 min so frames near the edges still find a neighbor.
+        let lower = range.lowerBound.addingTimeInterval(-600)
+        let upper = range.upperBound.addingTimeInterval(600)
+        latestWeatherReadings = try await SupabaseClient.shared
+            .fetchCloudwatcherReadings(from: lower, to: upper)
+    }
 
     /// Timestamp range covered by the given files, based on filename
     /// parsing + modification-date fallback.
@@ -174,11 +167,10 @@ final class IngestService: ObservableObject {
 
     private func processFile(
         _ fileURL: URL,
-        profile: CameraProfile,
-        readingsIndex: [Date],
+        cameraType: CameraType,
         dbWriter: DatabaseWriter?
     ) async {
-        guard let cameraSource = cameraSource(for: fileURL, profile: profile) else {
+        guard let cameraSource = cameraType.cameraSource(for: fileURL.pathExtension) else {
             skippedUnknownExtension += 1
             return
         }
@@ -194,8 +186,8 @@ final class IngestService: ObservableObject {
         let record = classify(
             filePath: fileURL.path,
             cameraSource: cameraSource,
+            cameraType: cameraType,
             captureUtc: captureUtc,
-            profile: profile,
             matchedReading: matchedReading
         )
 
@@ -212,24 +204,6 @@ final class IngestService: ObservableObject {
             }
         }
         inserted += 1
-    }
-
-    /// Determine the correct `camera_source` for a file given the user's
-    /// chosen profile and the file extension.
-    private func cameraSource(
-        for url: URL, profile: CameraProfile
-    ) -> ImageRecord.CameraSource? {
-        let ext = url.pathExtension.lowercased()
-        switch (profile.sensor.type, ext) {
-        case (.color, "jpg"), (.color, "jpeg"):
-            return .colorAllskyJpg
-        case (.monochrome, "jpg"), (.monochrome, "jpeg"):
-            return .monoZwoJpg
-        case (.monochrome, "fit"), (.monochrome, "fits"):
-            return .monoZwoFits
-        default:
-            return nil
-        }
     }
 
     /// Timestamp from filename if parseable, else file modification date.
@@ -266,29 +240,32 @@ final class IngestService: ObservableObject {
     private func classify(
         filePath: String,
         cameraSource: ImageRecord.CameraSource,
+        cameraType: CameraType,
         captureUtc: Date,
-        profile: CameraProfile,
         matchedReading: SupabaseClient.CloudwatcherReading?
     ) -> ImageRecord {
+        let latitude  = AppSettings.shared.latitudeDeg
+        let longitude = AppSettings.shared.longitudeDeg
+
         let sun = Ephemeris.sun(
             at: captureUtc,
-            latitudeDeg: profile.site.latitudeDeg,
-            longitudeDeg: profile.site.longitudeDeg
+            latitudeDeg: latitude,
+            longitudeDeg: longitude
         )
         let moon = Ephemeris.moon(
             at: captureUtc,
-            latitudeDeg: profile.site.latitudeDeg,
-            longitudeDeg: profile.site.longitudeDeg
+            latitudeDeg: latitude,
+            longitudeDeg: longitude
         )
 
-        let isExcluded = profile.sensor.isExcludedAtSunAlt(sun.horizontal.altitudeDeg)
+        let isExcluded = cameraType.isExcludedAtSunAlt(sun.horizontal.altitudeDeg)
 
         let reflectionScore = ReflectionPrefilter.score(
             .init(
                 sunAltDeg: sun.horizontal.altitudeDeg,
                 moonAltDeg: moon.horizontal.altitudeDeg,
                 moonIlluminationFraction: moon.illumination,
-                cameraIsDayCapable: profile.sensor.dayCapable
+                cameraIsDayCapable: cameraType.dayCapable
             )
         )
 
@@ -296,7 +273,7 @@ final class IngestService: ObservableObject {
         // later, when the embedding pipeline opens the actual file.
         let transitionalScoreGeometric: Double =
             TransitionalDetector.transitionWindowDeg.contains(sun.horizontal.altitudeDeg)
-            && profile.sensor.dayCapable
+            && cameraType.dayCapable
             ? 0.5
             : 0.0
 
@@ -305,7 +282,6 @@ final class IngestService: ObservableObject {
             filePath: filePath,
             fileHashSha256: nil,
             cameraSource: cameraSource,
-            cameraProfileId: profile.id,
             captureUtc: captureUtc,
             timeOfDay: sun.timeOfDay,
             supabaseReadingId: matchedReading?.id,

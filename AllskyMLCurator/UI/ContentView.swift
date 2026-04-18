@@ -4,16 +4,16 @@ import SwiftUI
 /// Phase-1 root view: folder-based ingest control and live counters.
 ///
 /// Parity with AstroBlink — the user opens any folder via `Cmd+O` or
-/// the sidebar button, picks a camera profile, and hits Ingest. Earlier
-/// sessions remember the last folder + profile so repeated runs are
-/// quick. The matrix view, single-image inspection view and autonomous
-/// mode land in subsequent phases.
+/// the sidebar button, picks the camera type (Color / Monochrome), and
+/// hits Ingest. Earlier sessions remember the last folder + camera
+/// type so repeated runs are quick. The matrix view, single-image
+/// inspection view and autonomous mode land in subsequent phases.
 struct ContentView: View {
 
     @StateObject private var ingest = IngestService()
 
     @State private var selectedFolder: URL?
-    @State private var selectedProfileId: String = ""
+    @State private var cameraType: CameraType = .color
     @State private var dryRun: Bool = true
 
     var body: some View {
@@ -39,15 +39,10 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Status").font(.headline)
 
-            statusRow("Supabase config",
+            statusRow("Supabase",
                       ok: SupabaseClient.shared.loadConfig() != nil,
-                      okMsg: "URL + anon key present (used for weather enrichment)",
-                      failMsg: "optional — set in Preferences → Supabase to enrich")
-
-            statusRow("Camera profiles",
-                      ok: !CameraProfileStore.shared.profiles.isEmpty,
-                      okMsg: "\(CameraProfileStore.shared.profiles.count) loaded",
-                      failMsg: "none found — check bundle resources")
+                      okMsg: "weather enrichment enabled",
+                      failMsg: "optional — set in Preferences → Supabase")
 
             statusRow("Folder",
                       ok: selectedFolder != nil,
@@ -120,7 +115,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("Folder:")
-                    .frame(width: 60, alignment: .trailing)
+                    .frame(width: 70, alignment: .trailing)
                 if let url = selectedFolder {
                     Text(url.path)
                         .font(.callout)
@@ -138,20 +133,16 @@ struct ContentView: View {
 
             HStack {
                 Text("Camera:")
-                    .frame(width: 60, alignment: .trailing)
-                Picker("", selection: $selectedProfileId) {
-                    ForEach(CameraProfileStore.shared.allIds, id: \.self) { id in
-                        if let profile = CameraProfileStore.shared.profile(id: id) {
-                            Text(profile.displayName).tag(id)
-                        } else {
-                            Text(id).tag(id)
-                        }
+                    .frame(width: 70, alignment: .trailing)
+                Picker("", selection: $cameraType) {
+                    ForEach(CameraType.allCases, id: \.self) { type in
+                        Text(type.displayName).tag(type)
                     }
                 }
                 .labelsHidden()
-                .frame(maxWidth: 380)
-                .onChange(of: selectedProfileId) { _, newId in
-                    AppSettings.shared.lastCameraProfileId = newId
+                .frame(maxWidth: 220)
+                .onChange(of: cameraType) { _, newValue in
+                    AppSettings.shared.lastCameraTypeRaw = newValue.rawValue
                 }
                 Spacer()
             }
@@ -163,7 +154,7 @@ struct ContentView: View {
                     startIngest()
                 }
                 .keyboardShortcut(.return, modifiers: .command)
-                .disabled(ingest.isRunning || selectedFolder == nil || selectedProfileId.isEmpty)
+                .disabled(ingest.isRunning || selectedFolder == nil)
 
                 Button("Cancel") { ingest.cancel() }
                     .disabled(!ingest.isRunning)
@@ -234,25 +225,24 @@ struct ContentView: View {
     }
 
     private func restoreLastSelection() {
-        if selectedProfileId.isEmpty {
-            selectedProfileId = AppSettings.shared.lastCameraProfileId
-                ?? CameraProfileStore.shared.allIds.first
-                ?? ""
+        if let raw = AppSettings.shared.lastCameraTypeRaw,
+           let saved = CameraType(rawValue: raw) {
+            cameraType = saved
         }
         // Folder access from the last session is not persisted in v1 —
-        // but the path is shown as a breadcrumb so the user can
-        // re-pick it with one click.
+        // the path is shown as a breadcrumb so the user can re-pick it
+        // with one click (⌘O).
         if selectedFolder == nil, let path = AppSettings.shared.lastIngestedFolderPath {
             selectedFolder = URL(fileURLWithPath: path)
         }
     }
 
     private func startIngest() {
-        guard let folder = selectedFolder, !selectedProfileId.isEmpty else { return }
+        guard let folder = selectedFolder else { return }
         Task {
             await ingest.ingestFolder(
                 folder,
-                profileId: selectedProfileId,
+                cameraType: cameraType,
                 dryRun: dryRun
             )
         }

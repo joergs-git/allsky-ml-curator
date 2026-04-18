@@ -1,9 +1,9 @@
 import Foundation
 import GRDB
 
-/// A single allsky frame known to the app. One row per physical file on
-/// the SMB-mounted Synology share. Ephemeris values are pre-computed on
-/// ingest so queries, filters and the transitional / reflection detectors
+/// A single allsky frame known to the app. One row per physical file
+/// picked up during ingest. Ephemeris values are pre-computed on ingest
+/// so queries, filters and the transitional / reflection detectors
 /// never hit trigonometry at runtime.
 struct ImageRecord: Codable, Identifiable, Equatable, Sendable {
 
@@ -13,11 +13,11 @@ struct ImageRecord: Codable, Identifiable, Equatable, Sendable {
     var filePath: String
     var fileHashSha256: String?
     var cameraSource: CameraSource
-    var cameraProfileId: String
 
     // MARK: - Time
 
-    /// UTC capture timestamp, parsed from EXIF or filename during ingest.
+    /// UTC capture timestamp, parsed from filename during ingest
+    /// (falls back to file modification date when nothing matches).
     var captureUtc: Date
     var timeOfDay: TimeOfDay
 
@@ -61,11 +61,12 @@ struct ImageRecord: Codable, Identifiable, Equatable, Sendable {
         case monoZwoJpg     = "mono_zwo_jpg"
         case monoZwoFits    = "mono_zwo_fits"
 
-        /// True when this source is the monochrome camera — by policy
-        /// such frames are excluded when the sun is above the profile's
-        /// daylight cutoff.
-        var isMonoCamera: Bool {
-            self == .monoZwoJpg || self == .monoZwoFits
+        /// Map back to the coarse two-bucket `CameraType` used in the UI.
+        var cameraType: CameraType {
+            switch self {
+            case .colorAllskyJpg:              return .color
+            case .monoZwoJpg, .monoZwoFits:    return .monochrome
+            }
         }
     }
 }
@@ -84,7 +85,6 @@ extension ImageRecord: FetchableRecord, MutablePersistableRecord {
         static let filePath              = Column(CodingKeys.filePath)
         static let fileHashSha256        = Column(CodingKeys.fileHashSha256)
         static let cameraSource          = Column(CodingKeys.cameraSource)
-        static let cameraProfileId       = Column(CodingKeys.cameraProfileId)
         static let captureUtc            = Column(CodingKeys.captureUtc)
         static let timeOfDay             = Column(CodingKeys.timeOfDay)
         static let supabaseReadingId     = Column(CodingKeys.supabaseReadingId)

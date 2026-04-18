@@ -37,11 +37,51 @@ final class AppSettings {
         set { defaults.set(newValue, forKey: Key.lastFolder) }
     }
 
-    /// Last camera profile the user selected for ingest. Restored in
-    /// the dropdown so repeated ingest sessions don't have to re-pick.
-    var lastCameraProfileId: String? {
-        get { defaults.string(forKey: Key.lastProfileId) }
-        set { defaults.set(newValue, forKey: Key.lastProfileId) }
+    /// Last camera type the user selected for ingest (raw value of
+    /// `CameraType`). Restored in the picker on relaunch so repeat
+    /// ingest sessions don't have to re-pick.
+    var lastCameraTypeRaw: String? {
+        get { defaults.string(forKey: Key.lastCameraTypeRaw) }
+        set { defaults.set(newValue, forKey: Key.lastCameraTypeRaw) }
+    }
+
+    // MARK: - Allsky fisheye geometry (per camera type)
+    //
+    // Used by the Phase-2 SkyDiskMask to crop the circular sky area
+    // from a rectangular allsky frame before feeding it to the ML
+    // embedding. Defaults match the user's ZWO ASI676MC allsky setup
+    // (3552×3552 sensor, 3200 px image-circle, centered). Monochrome
+    // defaults are placeholders until the ZWO ASI290 mono geometry is
+    // measured on a sample frame.
+
+    var colorFisheyeCenterXPx: Int {
+        get { defaults.integer(forKey: Key.colorCenterX, default: 1776) }
+        set { defaults.set(newValue, forKey: Key.colorCenterX) }
+    }
+
+    var colorFisheyeCenterYPx: Int {
+        get { defaults.integer(forKey: Key.colorCenterY, default: 1776) }
+        set { defaults.set(newValue, forKey: Key.colorCenterY) }
+    }
+
+    var colorFisheyeRadiusPx: Int {
+        get { defaults.integer(forKey: Key.colorRadius, default: 1600) }
+        set { defaults.set(newValue, forKey: Key.colorRadius) }
+    }
+
+    var monoFisheyeCenterXPx: Int {
+        get { defaults.integer(forKey: Key.monoCenterX, default: 968) }
+        set { defaults.set(newValue, forKey: Key.monoCenterX) }
+    }
+
+    var monoFisheyeCenterYPx: Int {
+        get { defaults.integer(forKey: Key.monoCenterY, default: 548) }
+        set { defaults.set(newValue, forKey: Key.monoCenterY) }
+    }
+
+    var monoFisheyeRadiusPx: Int {
+        get { defaults.integer(forKey: Key.monoRadius, default: 520) }
+        set { defaults.set(newValue, forKey: Key.monoRadius) }
     }
 
     // MARK: - Autonomous mode
@@ -85,7 +125,13 @@ final class AppSettings {
         static let latitude = "observatory.latitudeDeg"
         static let longitude = "observatory.longitudeDeg"
         static let lastFolder = "ingest.lastFolderPath"
-        static let lastProfileId = "ingest.lastProfileId"
+        static let lastCameraTypeRaw = "ingest.lastCameraTypeRaw"
+        static let colorCenterX = "camera.color.centerXPx"
+        static let colorCenterY = "camera.color.centerYPx"
+        static let colorRadius  = "camera.color.radiusPx"
+        static let monoCenterX  = "camera.mono.centerXPx"
+        static let monoCenterY  = "camera.mono.centerYPx"
+        static let monoRadius   = "camera.mono.radiusPx"
         static let autonomousMin = "autonomous.minLabels"
         static let autonomousConfidence = "autonomous.confidenceThreshold"
         static let clearBoost = "ml.clearClassBoost"
