@@ -221,18 +221,20 @@ final class SupabaseClient {
         let labeled_at: String             // ISO-8601 UTC
     }
 
-    /// Upsert a batch of training-sample rows. Supabase sees the
-    /// `Prefer: resolution=merge-duplicates` header and resolves
-    /// collisions on the unique `image_path` column — repeated sync of
-    /// the same frame updates its rating in place instead of erroring.
-    /// No server-side return needed; a 2xx confirms the write.
+    /// Upsert a batch of training-sample rows. PostgREST only treats a
+    /// POST as an upsert when BOTH the `on_conflict=<col>` query
+    /// parameter AND the `Prefer: resolution=merge-duplicates` header
+    /// are set. Missing either one makes the server reject duplicate
+    /// rows with HTTP 409 (code 23505). The earlier omission was the
+    /// classic PostgREST upsert gotcha — it still looked like a plain
+    /// INSERT on the server side.
     func upsertTrainingSamples(_ samples: [TrainingSampleDTO]) async throws {
         guard !samples.isEmpty else { return }
         let config = try configOrThrow()
         let url = try endpoint(
             config: config,
             path: "/rest/v1/ml_training_samples",
-            query: []
+            query: [URLQueryItem(name: "on_conflict", value: "image_path")]
         )
 
         var request = URLRequest(url: url)
