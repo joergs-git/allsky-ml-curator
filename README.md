@@ -2,8 +2,8 @@
 
 > Native macOS (Apple Silicon, Metal-accelerated) image curator for allsky 360° sky photography, with on-device ML assistance and live learning.
 
-**Version:** 0.2.0 (pre-MVP — ingest pipeline usable, UI minimal)
-**Status:** Active development, v1 MVP targeted
+**Version:** 0.3.0 (v1 MVP workflow usable end-to-end)
+**Status:** Active development
 
 ## Rating semantics — zenith cone, not full hemisphere
 
@@ -37,20 +37,22 @@ The resulting labeled dataset feeds three downstream uses:
 
 ---
 
-## Primary features (v1.0 MVP)
+## Primary features
 
-- 6×6 **live navigable matrix view** with per-tile prediction overlays and reflection/transitional badges.
-- Single-image deep-inspection view with metadata sidebar (weather, ephemeris, model probabilities).
-- **Keyboard-first** workflow: `0-5` rate, `R` reflection, `T` transitional, arrows navigate, `Shift+arrows` extend selection, `N` night mode.
-- **Autonomous Auto-Rate mode** — ML labels the stream, user confirms (`A`) or corrects; session agreement score surfaces continuously.
-- **Geometric reflection prefilter** — sun altitude, moon phase and moon altitude drive a deterministic reflection-risk score before any learned model runs.
-- **JPG overlay masking** — the `SkyDiskMask` crops the fisheye circle and neutralizes burned-in text rectangles before feeding the image to the ML embedding stage.
-- **Twilight transitional detector** — automatically flags gain-settling dusk/dawn frames that would otherwise noise the training set.
-- **Live ML loop** — Apple Vision `VNGenerateImageFeaturePrintRequest` embedding + BNNS logistic-regression head, retrained in <200 ms per batch, clear-sky class boosted for rare labels.
-- **Two-camera support** — color allsky (day + night) and monochrome ZWO (night only) treated as distinct sources with per-camera JSON profiles.
-- **Night mode** — red-on-black palette ported from AstroTriage for dark-adapted vision at the telescope.
+- **Navigable matrix view** (4 / 6 / 8 columns) with per-tile prediction overlays, rating stars, and reflection / transitional badges.
+- **Single-image inspection sheet** (Enter on a tile) — large frame + metadata sidebar with ephemeris, sensor data, probability bar chart per class, and a cloud-motion arrow.
+- **Keyboard-first workflow** — `0-5` rate, `R` reflection, `T` transitional, `Q` / `C` confidence prefixes (quick / certain), arrows navigate, Shift+arrows extend selection, `N` night mode, Enter inspects.
+- **Autonomous streaming auto-rate** (`⌘⇧A`) — model labels unrated frames one at a time with live progress and a mid-run stop. Gated behind a configurable minimum of human labels so a freshly seeded model can't feed its own bias.
+- **Live ML loop** — Apple Vision FeaturePrint embedding + BNNS logistic-regression head trained with inverse-frequency + clear-sky boost weighting. Retrain runs in < 200 ms for a typical Rheine dataset; 5-fold CV reports honest per-class precision / recall / F1 alongside a confusion-matrix heatmap.
+- **Classifier persistence** across launches + **real SHA-256 content hash** for every frame lazily upgraded by the embedding pipeline.
+- **Forecast aux features** — meteoblue totalcloud + seeing arcsec are denormalised per-frame and fed into the classifier's aux vector (slots 779-781).
+- **Cloud motion detection** — Vision translational registration between consecutive same-camera frames yields a °/min rate plus compass bearing (when a north offset is calibrated in Preferences → Camera).
+- **Geometric reflection + transitional prefilters** — sun/moon geometry and sidecar AE-stability feed deterministic risk scores used as aux features.
+- **Dynamic zenith crop** — horizon-exclusion slider + per-camera FoV compute a symmetric cone, applied identically to the displayed thumbnail and the embedding so rater and model see the same signal.
+- **Two-camera awareness** — color OSC day + night and monochrome ZWO night-only kept as distinct sources; mono-daytime frames auto-excluded from training.
+- **Night mode** — red-on-black palette for dark-adapted vision at the telescope.
 
-Roadmap beyond v1.0: FITS ingest (v1.1), automatic cloud-motion detection via optical flow (v2.0), multi-site support and CloudWatcher threshold feedback (v2.x).
+Roadmap: multi-site support + CloudWatcher Solo threshold feedback job (v2.x stretch). FITS ingest and obstruction-mask editor were previously listed here and are now descoped.
 
 ---
 
@@ -109,6 +111,30 @@ xcodebuild -project AllskyMLCurator.xcodeproj -scheme AllskyMLCurator -configura
 ```
 
 Or just press ⌘R in Xcode.
+
+---
+
+## Release pipeline (archive + notarize + publish)
+
+Every pushed tag is archived, notarised via Apple Developer ID, stapled and uploaded as a GitHub release. The helper script wraps the whole pipeline:
+
+```bash
+./scripts/release.sh                # full release: build → notarise → staple → gh release
+./scripts/release.sh --skip-notarize  # local signed build without notarisation
+./scripts/release.sh --skip-gh        # produce artefact locally, don't push to GitHub
+```
+
+One-time setup on a fresh machine:
+
+```bash
+brew install xcodegen
+xcrun notarytool store-credentials "allskymlcurator-notary" \
+  --apple-id "joergklaas@mac.com" \
+  --team-id "<YOUR_TEAM_ID>" \
+  --password "<app-specific-password>"
+```
+
+The script reads `MARKETING_VERSION` from `project.yml`, so bumping the release number is a single-line change before running it.
 
 ---
 
