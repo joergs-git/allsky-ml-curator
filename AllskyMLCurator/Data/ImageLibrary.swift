@@ -116,22 +116,27 @@ final class ImageLibrary: ObservableObject {
                 try label.insert(db)
             }
         }
+        Task { await SyncEngine.shared.pushPending() }
     }
 
     /// Toggle the reflection (`R`) flag on one or more images. If the
     /// image has no active label yet, a fresh one is created with
-    /// class=unrated + reflection_flag=true.
+    /// class=unrated + reflection_flag=true. Triggers a background
+    /// Supabase sync after the write.
     func toggleReflection(forImageIds imageIds: [Int64]) async {
         await toggleFlag(on: imageIds, flagPath: \.reflectionFlag) {
             $0.reflectionFlag.toggle()
         }
+        Task { await SyncEngine.shared.pushPending() }
     }
 
     /// Toggle the transitional (`T`) flag on one or more images.
+    /// Triggers a background Supabase sync after the write.
     func toggleTransitional(forImageIds imageIds: [Int64]) async {
         await toggleFlag(on: imageIds, flagPath: \.transitionalFlag) {
             $0.transitionalFlag.toggle()
         }
+        Task { await SyncEngine.shared.pushPending() }
     }
 
     // MARK: - Helpers

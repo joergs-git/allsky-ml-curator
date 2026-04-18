@@ -193,6 +193,75 @@ final class SupabaseClient {
         return try await get(url: url, config: config, as: [CloudwatcherReading].self)
     }
 
+    /// Payload for a single row upserted into `ml_training_samples`.
+    /// Matches the migration's column set exactly; the server-side
+    /// `UNIQUE (image_path)` constraint drives the upsert semantics.
+    struct TrainingSampleDTO: Encodable, Sendable {
+        let image_path: String
+        let image_hash_sha256: String?
+        let camera_source: String
+        let capture_utc: String           // ISO-8601 UTC
+        let cloudwatcher_reading_id: Int64?
+        let meteoblue_hour_id: Int64?
+        let sun_alt_deg: Double?
+        let sun_az_deg: Double?
+        let moon_alt_deg: Double?
+        let moon_az_deg: Double?
+        let moon_phase: Double?
+        let reflection_risk_score: Double?
+        let `class`: Int
+        let reflection_flag: Int
+        let transitional_flag: Int
+        let camera_profile_id: String?     // retired client-side, kept nullable for schema compat
+        let time_of_day: String?
+        let source: String
+        let sample_weight: Double
+        let confidence: Int?
+        let annotator_id: String?
+        let labeled_at: String             // ISO-8601 UTC
+    }
+
+    /// Upsert a batch of training-sample rows. Supabase sees the
+    /// `Prefer: resolution=merge-duplicates` header and resolves
+    /// collisions on the unique `image_path` column — repeated sync of
+    /// the same frame updates its rating in place instead of erroring.
+    /// No server-side return needed; a 2xx confirms the write.
+    func upsertTrainingSamples(_ samples: [TrainingSampleDTO]) async throws {
+        guard !samples.isEmpty else { return }
+        let config = try configOrThrow()
+        let url = try endpoint(
+            config: config,
+            path: "/rest/v1/ml_training_samples",
+            query: []
+        )
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(config.anonKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("resolution=merge-duplicates,return=minimal",
+                         forHTTPHeaderField: "Prefer")
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        request.httpBody = try encoder.encode(samples)
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw ClientError.transport(error)
+        }
+
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            let body = String(data: data, encoding: .utf8) ?? "<no body>"
+            throw ClientError.httpStatus(http.statusCode, body)
+        }
+    }
+
     /// Read all `meteoblue_hourly` rows whose `timestamp` falls within
     /// `[from, to)`. Always complete hours — 24 rows per day.
     func fetchMeteoblueHours(

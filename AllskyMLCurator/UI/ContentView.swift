@@ -17,6 +17,8 @@ struct ContentView: View {
     @State private var isLoading: Bool = false
     @State private var nightMode: Bool = AppSettings.shared.nightMode
 
+    @ObservedObject private var sync = SyncEngine.shared
+
     // MARK: - Body
 
     var body: some View {
@@ -97,11 +99,52 @@ struct ContentView: View {
                     AppSettings.shared.nightMode = new
                 }
 
+            syncChip
+
             summaryChip
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(AppColors.bgToolbar(nightMode))
+    }
+
+    /// Toolbar chip showing the current Supabase-sync status. Tapping
+    /// (or ⌘S) triggers an immediate push of any unsynced labels.
+    private var syncChip: some View {
+        Button {
+            Task { await sync.pushPending() }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: syncIcon)
+                    .foregroundStyle(syncIconColor)
+                Text(sync.status.statusText)
+                    .font(.caption)
+                    .foregroundStyle(sync.status.isProblem
+                                     ? Color.red
+                                     : AppColors.fgDim(nightMode))
+            }
+        }
+        .buttonStyle(.plain)
+        .help("Push unsynced labels to Supabase (⌘S)")
+        .keyboardShortcut("s", modifiers: .command)
+    }
+
+    private var syncIcon: String {
+        switch sync.status {
+        case .idle, .notConfigured: return "arrow.triangle.2.circlepath"
+        case .pushing:              return "arrow.up.circle"
+        case .upToDate:             return "checkmark.icloud"
+        case .failed:               return "exclamationmark.icloud"
+        }
+    }
+
+    private var syncIconColor: Color {
+        switch sync.status {
+        case .upToDate:  return .green
+        case .failed:    return .red
+        case .pushing:   return .blue
+        default:         return AppColors.fgDim(nightMode)
+        }
     }
 
     private var summaryChip: some View {
