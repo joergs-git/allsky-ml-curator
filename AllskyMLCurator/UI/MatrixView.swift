@@ -28,6 +28,11 @@ struct MatrixView: View {
     /// can refresh the image list.
     let onMutation: () async -> Void
 
+    /// Called when the user presses Enter on the cursor tile. The
+    /// passed index addresses `items`; the caller opens the
+    /// inspection sheet.
+    let onInspect: (Int) -> Void
+
     // MARK: - State
 
     @State private var selectedIds: Set<Int64> = []
@@ -201,6 +206,16 @@ struct MatrixView: View {
                 return .handled
             default: return .ignored
             }
+        }
+
+        if press.key == .return {
+            // Enter on the cursor tile opens the single-image
+            // inspection view. No modifier combinations so it works
+            // regardless of what else is pressed.
+            if items.indices.contains(cursorIndex) {
+                onInspect(cursorIndex)
+            }
+            return .handled
         }
 
         switch press.characters {

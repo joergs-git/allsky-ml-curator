@@ -35,6 +35,10 @@ struct ContentView: View {
     /// (either with a summary or with a gate error).
     @State private var autoRateAlert: AutoRateAlertContent?
 
+    /// Index of the item currently being inspected in the single-image
+    /// view. `nil` hides the sheet.
+    @State private var inspectedIndex: Int?
+
     struct AutoRateAlertContent: Identifiable {
         var id = UUID()
         var title: String
@@ -124,6 +128,28 @@ struct ContentView: View {
                 message: Text(content.message),
                 dismissButton: .default(Text("OK"))
             )
+        }
+        .sheet(
+            isPresented: Binding(
+                get: { inspectedIndex != nil },
+                set: { if !$0 { inspectedIndex = nil } }
+            )
+        ) {
+            if let idx = inspectedIndex,
+               items.indices.contains(idx) {
+                let currentId = items[idx].id
+                InspectionView(
+                    items: items,
+                    index: Binding(
+                        get: { inspectedIndex ?? idx },
+                        set: { inspectedIndex = $0 }
+                    ),
+                    prediction: classifier.predictions[currentId],
+                    nightMode: nightMode,
+                    onMutation: { await reload() },
+                    onDismiss: { inspectedIndex = nil }
+                )
+            }
         }
     }
 
@@ -465,7 +491,8 @@ struct ContentView: View {
             nightMode: nightMode,
             predictions: classifier.predictions,
             onSelectionChange: { selectedIds = $0 },
-            onMutation: { await reload() }
+            onMutation: { await reload() },
+            onInspect: { idx in inspectedIndex = idx }
         )
     }
 
