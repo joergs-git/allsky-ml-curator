@@ -76,14 +76,39 @@ final class IngestService: ObservableObject {
             let dbWriter: DatabaseWriter? =
                 dryRun ? nil : Database.shared.writer
 
+            // Staged batch so we can commit the whole group in a
+            // single GRDB write transaction. One transaction per file
+            // is fine at ~100 frames but at 20 000 frames the SQLite
+            // BEGIN/COMMIT overhead dominates, stretching an ingest
+            // run to several minutes of wall time. Batching to ~500
+            // cuts 20 k transactions down to ~40.
+            var pendingBatch: [ImageRecord] = []
+            pendingBatch.reserveCapacity(Self.insertBatchSize)
+
             for file in files {
                 try token.checkCancelled()
-                await processFile(
-                    file,
-                    cameraType: cameraType,
-                    dbWriter: dbWriter
-                )
+                if let record = await processFile(
+                    file, cameraType: cameraType
+                ) {
+                    if dbWriter != nil {
+                        pendingBatch.append(record)
+                    } else {
+                        // Dry-run: count without DB writes so the
+                        // preview still reflects what a real run
+                        // would insert.
+                        inserted += 1
+                    }
+                }
                 processed += 1
+
+                if let dbWriter,
+                   pendingBatch.count >= Self.insertBatchSize {
+                    await flushPendingBatch(&pendingBatch, into: dbWriter)
+                }
+            }
+
+            if let dbWriter, !pendingBatch.isEmpty {
+                await flushPendingBatch(&pendingBatch, into: dbWriter)
             }
 
             statusMessage = dryRun
@@ -221,14 +246,24 @@ final class IngestService: ObservableObject {
 
     // MARK: - Per-file processing
 
+    /// Batch size for the ingest write pipeline. 500 was chosen by
+    /// back-of-the-envelope: GRDB BEGIN/COMMIT overhead dominates
+    /// below ~50, memory of pending records grows past ~2 000, and
+    /// cancellation latency grows linearly with the batch size (the
+    /// cancel-check only runs between batches, not inside one).
+    private static let insertBatchSize = 500
+
+    /// Build an `ImageRecord` for a single file. Returns `nil` if the
+    /// file should be skipped (unknown extension, no timestamp). No DB
+    /// writes — the caller stages records in a batch and hands them to
+    /// `flushPendingBatch` when the batch fills up.
     private func processFile(
         _ fileURL: URL,
-        cameraType: CameraType,
-        dbWriter: DatabaseWriter?
-    ) async {
+        cameraType: CameraType
+    ) async -> ImageRecord? {
         guard let cameraSource = cameraType.cameraSource(for: fileURL.pathExtension) else {
             skippedUnknownExtension += 1
-            return
+            return nil
         }
 
         let meta = MetaJsonReader.read(for: fileURL)
@@ -236,7 +271,7 @@ final class IngestService: ObservableObject {
 
         guard let captureUtc = timestamp(for: fileURL, meta: meta) else {
             skippedNoTimestamp += 1
-            return
+            return nil
         }
 
         let matchedReading = nearestReading(to: captureUtc)
@@ -258,15 +293,41 @@ final class IngestService: ObservableObject {
         if record.reflectionRiskScore >= 0.5 { reflectionFlagged += 1 }
         if record.transitionalRiskScore >= 0.7 { transitionalFlagged += 1 }
 
-        if let dbWriter {
-            do {
-                try await insertIfNew(record, into: dbWriter)
-            } catch {
-                lastError = "DB insert failed for \(fileURL.lastPathComponent): \(error)"
-                return
+        return record
+    }
+
+    /// Commit the staged batch in a single GRDB write transaction.
+    /// Each row is still checked for an existing `filePath` before
+    /// insert so re-ingesting a folder is a no-op; the difference vs.
+    /// the old per-file path is that SELECT + INSERT both live inside
+    /// one transaction per 500 rows instead of one transaction per
+    /// row. At 20 000 files that's ~40 transactions instead of 20 000.
+    private func flushPendingBatch(
+        _ batch: inout [ImageRecord],
+        into db: DatabaseWriter
+    ) async {
+        guard !batch.isEmpty else { return }
+        let records = batch
+        batch.removeAll(keepingCapacity: true)
+        do {
+            let newInsertCount = try await db.write { db -> Int in
+                var insertedInBatch = 0
+                for record in records {
+                    let existing = try ImageRecord
+                        .filter(ImageRecord.Columns.filePath == record.filePath)
+                        .fetchOne(db)
+                    if existing == nil {
+                        var mutable = record
+                        try mutable.insert(db)
+                        insertedInBatch += 1
+                    }
+                }
+                return insertedInBatch
             }
+            inserted += newInsertCount
+        } catch {
+            lastError = "Batch insert failed (\(records.count) records): \(error)"
         }
-        inserted += 1
     }
 
     /// Timestamp priority: sidecar `time` (authoritative UTC epoch)
@@ -408,23 +469,6 @@ final class IngestService: ObservableObject {
     private static func pathIdentityHash(for path: String) -> String {
         let digest = SHA256.hash(data: Data(path.utf8))
         return digest.map { String(format: "%02x", $0) }.joined()
-    }
-
-    // MARK: - Database insert
-
-    /// Insert when no row with the same `file_path` already exists.
-    private func insertIfNew(
-        _ record: ImageRecord, into db: DatabaseWriter
-    ) async throws {
-        try await db.write { db in
-            let existing = try ImageRecord
-                .filter(ImageRecord.Columns.filePath == record.filePath)
-                .fetchOne(db)
-            if existing == nil {
-                var mutable = record
-                try mutable.insert(db)
-            }
-        }
     }
 
     // MARK: - Bookkeeping

@@ -31,12 +31,16 @@ final class ImageLibrary: ObservableObject {
     ///   - `cameraType`: nil = all cameras; else filter by cameraSource.cameraType
     ///   - `includeExcluded`: true retains mono-daylight rows (normally hidden)
     ///   - `onlyUnrated`: true restricts to class == 0 (or no active label)
-    ///   - `limit`: cap on results (nil = no cap; default 10_000 safety ceiling)
+    ///   - `limit`: cap on results. Defaults to `nil` (unbounded) so a
+    ///     20 000+ frame library renders fully in the matrix — LazyVGrid
+    ///     only materialises visible tiles anyway, and the item array
+    ///     itself at 20 k × ~500 bytes ≈ 10 MB is inconsequential. The
+    ///     previous 10 000 cap silently truncated larger libraries.
     func fetchImages(
         cameraType: CameraType? = nil,
         includeExcluded: Bool = false,
         ratingFilter: RatingFilter = .any,
-        limit: Int? = 10_000
+        limit: Int? = nil
     ) async -> [ImageListItem] {
         let reader = Database.shared.reader
         do {
