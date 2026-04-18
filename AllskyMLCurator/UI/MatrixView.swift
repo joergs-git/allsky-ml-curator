@@ -32,6 +32,11 @@ struct MatrixView: View {
 
     @State private var selectedIds: Set<Int64> = []
     @State private var cursorIndex: Int = 0
+    /// Stable anchor for Shift-based range selection. Only touched by
+    /// plain (no-modifier) clicks, so the user can keyboard-navigate
+    /// freely and still shift-click back to the anchor's position
+    /// later. Standard macOS text/table selection model.
+    @State private var selectionAnchor: Int = 0
     @FocusState private var isFocused: Bool
 
     private var gridColumns: [GridItem] {
@@ -73,6 +78,7 @@ struct MatrixView: View {
                 if selectedIds.isEmpty, let first = items.first {
                     selectedIds = [first.id]
                     cursorIndex = 0
+                    selectionAnchor = 0
                     onSelectionChange(selectedIds)
                 }
             }
@@ -95,15 +101,23 @@ struct MatrixView: View {
         cursorIndex = index
         let modifiers = NSEvent.modifierFlags
         if modifiers.contains(.command) {
+            // Toggle individual tile; anchor moves to the clicked
+            // tile so the next shift-click/arrow extends from here.
             if selectedIds.contains(item.id) { selectedIds.remove(item.id) }
             else                             { selectedIds.insert(item.id) }
-        } else if modifiers.contains(.shift),
-                  let anchor = selectedIds.first,
-                  let anchorIndex = items.firstIndex(where: { $0.id == anchor }) {
-            let range = min(anchorIndex, index)...max(anchorIndex, index)
-            selectedIds.formUnion(items[range].map(\.id))
+            selectionAnchor = index
+        } else if modifiers.contains(.shift) {
+            // Extend from the stable anchor to the clicked tile,
+            // using the row-aligned rectangle so multi-row ranges
+            // come out as horizontal strips instead of a diagonal.
+            selectedIds = rowAlignedSelection(
+                fromAnchor: selectionAnchor, toCursor: index
+            )
         } else {
+            // Plain click — move both anchor and cursor here, single
+            // tile in the selection.
             selectedIds = [item.id]
+            selectionAnchor = index
         }
         onSelectionChange(selectedIds)
     }
@@ -112,7 +126,31 @@ struct MatrixView: View {
         let liveIds = Set(items.map(\.id))
         selectedIds.formIntersection(liveIds)
         if cursorIndex >= items.count { cursorIndex = max(0, items.count - 1) }
+        if selectionAnchor >= items.count { selectionAnchor = max(0, items.count - 1) }
         onSelectionChange(selectedIds)
+    }
+
+    /// Row-aligned rectangle between two indices. Single-row ranges
+    /// are contiguous (just tiles between lo and hi). Multi-row
+    /// ranges fill every intermediate row from column 0 to the last
+    /// column, so Shift+Down selects a full horizontal strip rather
+    /// than a diagonal sliver the column-major arithmetic would
+    /// otherwise produce.
+    private func rowAlignedSelection(
+        fromAnchor anchor: Int, toCursor cursor: Int
+    ) -> Set<Int64> {
+        let clampedAnchor = max(0, min(items.count - 1, anchor))
+        let clampedCursor = max(0, min(items.count - 1, cursor))
+        let lo = min(clampedAnchor, clampedCursor)
+        let hi = max(clampedAnchor, clampedCursor)
+        let loRow = lo / columns
+        let hiRow = hi / columns
+        if loRow == hiRow {
+            return Set(items[lo...hi].map(\.id))
+        }
+        let start = loRow * columns
+        let end = min(items.count - 1, (hiRow + 1) * columns - 1)
+        return Set(items[start...end].map(\.id))
     }
 
     // MARK: - Keyboard
@@ -142,6 +180,10 @@ struct MatrixView: View {
             switch press.characters {
             case "a":
                 selectedIds = Set(items.map(\.id))
+                // Anchor the "select all" to position 0 so the next
+                // shift-action collapses predictably.
+                selectionAnchor = 0
+                cursorIndex = items.isEmpty ? 0 : items.count - 1
                 onSelectionChange(selectedIds)
                 return .handled
             default: return .ignored
@@ -176,8 +218,17 @@ struct MatrixView: View {
         cursorIndex = newIndex
         let targetId = items[newIndex].id
         if extend {
-            selectedIds.insert(targetId)
+            // Shift+navigation — extend from the stable anchor to
+            // the new cursor. Anchor is deliberately NOT touched so
+            // the user can scroll around with arrows / PageDown and
+            // later shift-click back from the pre-scroll position.
+            selectedIds = rowAlignedSelection(
+                fromAnchor: selectionAnchor, toCursor: newIndex
+            )
         } else {
+            // Plain navigation — single-tile selection. Anchor stays
+            // where it was (standard macOS behaviour): a later
+            // shift-click still extends from the original pick.
             selectedIds = [targetId]
         }
         onSelectionChange(selectedIds)
