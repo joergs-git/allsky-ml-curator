@@ -109,13 +109,13 @@ final class EmbeddingPipeline: @unchecked Sendable {
             return await existing.value
         }
 
-        // Non-detached Task: inherits the caller's cancellation, so a
-        // tile scrolling off the screen can cancel the extraction it
-        // kicked off. Previously Task.detached orphaned the work — with
-        // 20k+ tiles the resulting 20k+ pending extractions piled up on
-        // the 3-slot semaphore and starved the thumbnail pipeline
-        // sharing the same SMB channel.
-        let task = Task { [self] () -> Embedding? in
+        // `Task.detached` keeps the Vision + CGImageSource work off
+        // the MainActor that `.task(...)` inherits. Cancellation is
+        // still threaded through via `withTaskCancellationHandler` +
+        // explicit `task.cancel()`, so scroll-off tears down pending
+        // extractions without needing the task to be structurally
+        // attached.
+        let task = Task.detached(priority: .utility) { [self] () -> Embedding? in
             defer { inflight.withLock { $0[key] = nil } }
             guard !Task.isCancelled else { return nil }
             await extractionSemaphore.acquire()

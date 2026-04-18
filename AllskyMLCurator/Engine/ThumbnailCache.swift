@@ -90,11 +90,16 @@ final class ThumbnailCache: @unchecked Sendable {
             return await existing.value
         }
 
-        // Non-detached Task so the tile's `.task(id:)` cancellation
-        // reaches in here — when the tile scrolls off, the thumbnail
-        // pipeline bails early instead of burning an SMB read that
-        // will never be displayed.
-        let task = Task { [self] () -> NSImage? in
+        // `Task.detached` is load-bearing here: the matrix tile's
+        // `.task` runs on the MainActor, and a plain `Task { ... }`
+        // inherits that isolation — which means CGImageSource decode,
+        // CGContext.draw, and the HEIC encode would all block the
+        // main thread. Detached pushes the work onto the cooperative
+        // pool. Cancellation is propagated manually via
+        // `withTaskCancellationHandler` + explicit `task.cancel()` so
+        // the scroll-off wins the orphan-task fix from PR #38 still
+        // apply.
+        let task = Task.detached(priority: .utility) { [self] () -> NSImage? in
             defer { inflight.withLock { $0[key] = nil } }
             guard !Task.isCancelled else { return nil }
             await generationSemaphore.acquire()

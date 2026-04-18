@@ -12,7 +12,7 @@ struct AllskyMLCuratorApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        Window("Allsky ML Curator", id: "main") {
+        Window(Self.windowTitle, id: "main") {
             ContentView()
                 .frame(minWidth: 1100, minHeight: 720)
         }
@@ -38,6 +38,20 @@ struct AllskyMLCuratorApp: App {
 
         Settings {
             PreferencesView()
+        }
+    }
+
+    /// Bundle-version-aware window title so every release is
+    /// self-identifying. Falls back to just "Allsky ML Curator" when
+    /// the Info.plist keys are missing (e.g. Xcode previews).
+    private static var windowTitle: String {
+        let info = Bundle.main.infoDictionary
+        let marketing = info?["CFBundleShortVersionString"] as? String
+        let build = info?["CFBundleVersion"] as? String
+        switch (marketing, build) {
+        case let (.some(v), .some(b)): return "Allsky ML Curator \(v) (\(b))"
+        case let (.some(v), nil):      return "Allsky ML Curator \(v)"
+        default:                        return "Allsky ML Curator"
         }
     }
 }
