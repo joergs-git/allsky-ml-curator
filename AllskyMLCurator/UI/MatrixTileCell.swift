@@ -109,7 +109,19 @@ struct MatrixTileCell: View {
         }
         .aspectRatio(1, contentMode: .fit)
         .task(id: item.image.filePath) {
-            image = await ThumbnailCache.shared.generate(for: item.image.filePath)
+            // Thumbnail drives the visible tile; embedding extraction
+            // is fired in parallel so the Phase-5b classifier has a
+            // warm .fp sidecar by the time the user asks for
+            // predictions. Fire-and-forget — failures are silent
+            // (missing SMB mount, unreadable JPG).
+            let filePath = item.image.filePath
+            let cameraType = item.image.cameraSource.cameraType
+            Task.detached(priority: .background) {
+                _ = await EmbeddingPipeline.shared.generate(
+                    for: filePath, cameraType: cameraType
+                )
+            }
+            image = await ThumbnailCache.shared.generate(for: filePath)
         }
     }
 
