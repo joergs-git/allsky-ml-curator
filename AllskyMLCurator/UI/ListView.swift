@@ -392,6 +392,7 @@ struct ListView: View {
         let liveIds = Set(newIds)
         selectedIds.formIntersection(liveIds)
 
+        let previousCursorId = cursorId
         if let cid = cursorId, liveIds.contains(cid) {
             // still live
         } else if let cid = cursorId,
@@ -408,8 +409,13 @@ struct ListView: View {
             anchorId = cursorId
         }
 
+        // See MatrixView.reconcileSelectionState for the invariants.
+        if selectedIds.isEmpty, let cid = cursorId {
+            selectedIds = [cid]
+        }
+
         onSelectionChange(selectedIds)
-        if let cid = cursorId {
+        if cursorId != previousCursorId, let cid = cursorId {
             withAnimation(.easeOut(duration: 0.15)) {
                 proxy.scrollTo(cid, anchor: .center)
             }

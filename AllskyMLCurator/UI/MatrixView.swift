@@ -214,6 +214,7 @@ struct MatrixView: View {
         selectedIds.formIntersection(liveIds)
 
         // Cursor: preserve by ID, else nearest survivor, else first.
+        let previousCursorId = cursorId
         if let cid = cursorId, liveIds.contains(cid) {
             // still live
         } else if let cid = cursorId,
@@ -231,12 +232,28 @@ struct MatrixView: View {
             anchorId = cursorId
         }
 
+        // Selection invariant: the cursor tile is always selected.
+        // Without this, the very first items-populate (empty → list)
+        // would leave the selection empty and the curator's first
+        // digit press would rate nothing. Also protects against a
+        // rating batch that strips out every previously-selected
+        // tile — landing an empty set on the next tile would require
+        // an extra click before keys work again.
+        if selectedIds.isEmpty, let cid = cursorId {
+            selectedIds = [cid]
+        }
+
         onSelectionChange(selectedIds)
 
-        // Snap the scroll view onto the cursor so the user doesn't
-        // have to hunt for it after a filter change or a rating that
-        // removed visible tiles.
-        if let cid = cursorId {
+        // Snap the scroll view onto the cursor *only* when the cursor
+        // actually moved. A full scroll reset on every items tick
+        // used to fight the user's manual scrolling: they'd scroll a
+        // few rows, a sync or coverage refresh would bump items'
+        // array identity, and the viewport would snap back to the
+        // cursor. Now the scroll only follows a deliberate cursor
+        // change (list change that dropped the cursor tile, or an
+        // initial populate).
+        if cursorId != previousCursorId, let cid = cursorId {
             withAnimation(.easeOut(duration: 0.15)) {
                 proxy.scrollTo(cid, anchor: .center)
             }
