@@ -28,6 +28,13 @@ struct InspectionView: View {
     /// very next digit with a quick / certain confidence annotation.
     @State private var pendingConfidence: Int?
 
+    /// Cloud-motion vector between the previous and current frames.
+    /// Lazy: recomputed whenever the inspected index changes, cleared
+    /// during the recompute so the UI flips to "calculating" rather
+    /// than stale.
+    @State private var motion: CloudMotionDetector.Motion?
+    @State private var motionComputing: Bool = false
+
     // MARK: - Body
 
     var body: some View {
@@ -51,6 +58,9 @@ struct InspectionView: View {
         .focusable()
         .focusEffectDisabled()
         .onKeyPress(phases: [.down, .repeat]) { press in handleKey(press) }
+        .task(id: index) {
+            await recomputeMotion()
+        }
     }
 
     // MARK: - Panes
@@ -96,6 +106,7 @@ struct InspectionView: View {
                 timeBlock
                 ephemerisBlock
                 sensorBlock
+                motionBlock
                 ratingBlock
                 predictionBlock
                 Spacer(minLength: 20)
@@ -178,6 +189,43 @@ struct InspectionView: View {
                         .font(.caption)
                         .foregroundStyle(AppColors.fgDim(nightMode))
                 }
+            }
+        }
+    }
+
+    /// Cloud motion vs. the previous frame in the filtered list.
+    /// Shown as an arrow indicating the direction clouds drifted
+    /// between the two captures plus a text summary ("SW at 2.4 °/min").
+    /// Stays silent when calibration is missing entirely, fallback to
+    /// frame-local bearing when only the compass offset is absent.
+    private var motionBlock: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            sectionTitle("Cloud motion")
+            if motionComputing {
+                Text("calculating…")
+                    .font(.caption)
+                    .foregroundStyle(AppColors.fgDim(nightMode))
+            } else if let motion {
+                HStack(spacing: 12) {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 18, weight: .semibold))
+                        .rotationEffect(.degrees(motion.compassBearingDeg ?? motion.frameBearingDeg))
+                        .foregroundStyle(AppColors.accent(nightMode))
+                        .frame(width: 28, height: 28)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(motion.compassLabel) at \(String(format: "%.1f", motion.degreesPerMinute)) °/min")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(AppColors.fg(nightMode))
+                        Text("over \(String(format: "%.0f", motion.secondsBetweenFrames)) s between frames")
+                            .font(.caption)
+                            .foregroundStyle(AppColors.fgDim(nightMode))
+                    }
+                }
+            } else {
+                Text("no previous frame in this filter — open a later tile to see motion.")
+                    .font(.caption)
+                    .foregroundStyle(AppColors.fgDim(nightMode))
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -336,6 +384,74 @@ struct InspectionView: View {
             }
             return .handled
         default: return .ignored
+        }
+    }
+
+    /// Recompute the cloud-motion arrow whenever the inspected index
+    /// shifts. Picks the nearest earlier frame in the filtered list
+    /// that shares the same camera, runs the Vision registration off
+    /// the main actor, and publishes the result back when finished.
+    private func recomputeMotion() async {
+        guard let current = currentItem, index > 0 else {
+            motion = nil
+            motionComputing = false
+            return
+        }
+
+        // Walk back to find a same-camera predecessor.
+        var prevItem: ImageLibrary.ImageListItem?
+        for candidateIndex in stride(from: index - 1, through: 0, by: -1) {
+            let candidate = items[candidateIndex]
+            if candidate.image.cameraSource == current.image.cameraSource {
+                prevItem = candidate
+                break
+            }
+        }
+        guard let prev = prevItem else {
+            motion = nil
+            motionComputing = false
+            return
+        }
+
+        motionComputing = true
+        motion = nil
+
+        let seconds = current.image.captureUtc.timeIntervalSince(prev.image.captureUtc)
+        let cameraType = current.image.cameraSource.cameraType
+        let settings = AppSettings.shared
+        let radius: Int
+        let fov: Double
+        let northOffset: Double
+        switch cameraType {
+        case .color:
+            radius = settings.colorFisheyeRadiusPx
+            fov = settings.colorFovDeg
+            northOffset = settings.colorNorthOffsetDeg
+        case .monochrome:
+            radius = settings.monoFisheyeRadiusPx
+            fov = settings.monoFovDeg
+            northOffset = settings.monoNorthOffsetDeg
+        }
+
+        let prevPath = prev.image.filePath
+        let currPath = current.image.filePath
+
+        let result = await CloudMotionDetector.detect(
+            previousPath: prevPath,
+            currentPath: currPath,
+            secondsBetween: seconds,
+            cameraType: cameraType,
+            fisheyeRadiusPx: radius,
+            fovDeg: fov,
+            northOffsetDeg: northOffset
+        )
+
+        // Only publish if the sheet still points at the same frame —
+        // a quick navigation sequence can start a dozen tasks while
+        // only the final one is still relevant.
+        if currentItem?.id == current.id {
+            motion = result
+            motionComputing = false
         }
     }
 
