@@ -118,22 +118,50 @@ final class ThumbnailCache: @unchecked Sendable {
             return onDisk
         }
 
-        // SkyDiskMask wants a full-resolution CGImage so the geometry
-        // values (center_x/y + radius) are expressed in the camera's
-        // native pixel space. Loading the original is slow on SMB —
-        // the detached task + 4-slot semaphore in this class bound
-        // the damage.
-        guard let source = CGImageSourceCreateWithURL(sourceURL as CFURL, nil),
-              let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil)
+        guard let source = CGImageSourceCreateWithURL(sourceURL as CFURL, nil)
         else { return nil }
 
-        let geometry = SkyDiskMask.Geometry.fromSettings(for: cameraType)
-        guard let masked = SkyDiskMask.apply(to: cgImage, geometry: geometry) else {
+        // ImageIO's thumbnail pathway is vastly faster than a full
+        // `CGImageSourceCreateImageAtIndex` decode — especially over
+        // SMB, where reading the full 3552×3552 JPEG is the real
+        // bottleneck. We downsample the source to a maxDim that's
+        // roughly 2× the final tile size so the SkyDiskMask crop still
+        // has enough detail to re-resize cleanly, then apply the mask
+        // using a scaled Geometry.
+        let maxThumbDim = Int(Self.size * 2)
+        let thumbnailOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform:   true,
+            kCGImageSourceThumbnailMaxPixelSize:          maxThumbDim
+        ]
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(
+            source, 0, thumbnailOptions as CFDictionary
+        ) else { return nil }
+
+        // Derive the pixel-space scale factor from the source props
+        // so we can scale the fisheye geometry to match the thumbnail.
+        let scale: Double = {
+            guard let props = CGImageSourceCopyPropertiesAtIndex(
+                source, 0, nil
+            ) as? [CFString: Any],
+            let srcW = props[kCGImagePropertyPixelWidth] as? Int,
+            srcW > 0 else {
+                return 1.0
+            }
+            return Double(thumbnail.width) / Double(srcW)
+        }()
+
+        let geometry = Self.scaledGeometry(
+            SkyDiskMask.Geometry.fromSettings(for: cameraType),
+            by: scale
+        )
+        guard let masked = SkyDiskMask.apply(to: thumbnail, geometry: geometry) else {
             return nil
         }
 
-        // Resize to the cache target. The masked image is already
-        // square, so one uniform scale does the job.
+        // Resize to the canonical cache size. Masked output may be
+        // smaller than `size` when the zenith crop is aggressive —
+        // the resize step normalises the tile dimension either way.
         guard let resized = Self.resize(masked, to: Int(Self.size)) else {
             return nil
         }
@@ -157,6 +185,21 @@ final class ThumbnailCache: @unchecked Sendable {
             forKey: cacheKey(for: imagePath, cameraType: cameraType) as NSString
         )
         return nsImage
+    }
+
+    /// Scale a fisheye geometry by `scale`, preserving the crop
+    /// fraction. Used when SkyDiskMask needs to operate on an
+    /// already-downsampled thumbnail rather than the full image.
+    private static func scaledGeometry(
+        _ g: SkyDiskMask.Geometry, by scale: Double
+    ) -> SkyDiskMask.Geometry {
+        guard scale > 0, scale != 1 else { return g }
+        return SkyDiskMask.Geometry(
+            centerXPx: Int((Double(g.centerXPx) * scale).rounded()),
+            centerYPx: Int((Double(g.centerYPx) * scale).rounded()),
+            radiusPx: max(1, Int((Double(g.radiusPx) * scale).rounded())),
+            cropFraction: g.cropFraction
+        )
     }
 
     /// Downscale a square `CGImage` to `side × side` pixels using a
