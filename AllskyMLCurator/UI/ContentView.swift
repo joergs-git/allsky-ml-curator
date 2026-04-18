@@ -19,6 +19,11 @@ struct ContentView: View {
 
     @ObservedObject private var sync = SyncEngine.shared
 
+    /// Coverage of the Vision feature-print sidecar cache — refreshed
+    /// periodically so the toolbar chip shows "embed X / Y" progress
+    /// while the background generator chews through the matrix.
+    @State private var embeddedCount: Int = 0
+
     // MARK: - Body
 
     var body: some View {
@@ -35,6 +40,15 @@ struct ContentView: View {
         }
         .background(AppColors.bg(nightMode))
         .task { await reload() }
+        .task {
+            // Poll the embedding sidecar count every 2 s so the
+            // toolbar chip advances as the background generator
+            // writes files. Cheap — it's just a directory listing.
+            while !Task.isCancelled {
+                embeddedCount = EmbeddingPipeline.sidecarCount()
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+        }
         .sheet(isPresented: $showIngestSheet, onDismiss: {
             Task { await reload() }
         }) {
@@ -99,6 +113,7 @@ struct ContentView: View {
                     AppSettings.shared.nightMode = new
                 }
 
+            embeddingChip
             syncChip
 
             summaryChip
@@ -106,6 +121,22 @@ struct ContentView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(AppColors.bgToolbar(nightMode))
+    }
+
+    /// Embedding coverage — counts how many Vision feature-print
+    /// sidecars are on disk vs. how many frames are in the current
+    /// filter. Gives the user a feel for how far the background
+    /// generator has progressed before Phase-5b training.
+    private var embeddingChip: some View {
+        HStack(spacing: 5) {
+            Image(systemName: embeddedCount >= items.count ? "brain.fill" : "brain")
+                .foregroundStyle(embeddedCount >= items.count
+                                 ? Color.green : AppColors.fgDim(nightMode))
+            Text("embed \(embeddedCount) / \(items.count)")
+                .font(.caption)
+                .foregroundStyle(AppColors.fgDim(nightMode))
+        }
+        .help("Vision FeaturePrint cache coverage — warms up in the background as you scroll")
     }
 
     /// Toolbar chip showing the current Supabase-sync status. Tapping
