@@ -85,6 +85,27 @@ final class ImageLibrary: ObservableObject {
         }
     }
 
+    /// Every image that currently carries a non-unrated human label.
+    /// Used by the app-start embedding warmer so the classifier's
+    /// training set grows even if the user rated frames without
+    /// scrolling through every tile.
+    func fetchRatedImages() async -> [ImageRecord] {
+        let reader = Database.shared.reader
+        return (try? await reader.read { db in
+            let ratedIds = try LabelRecord
+                .filter(Column("isCurrent") == true)
+                .filter(Column("source") == "human")
+                .filter(Column("ratingClass") != RatingClass.unrated.rawValue)
+                .select(Column("imageId"), as: Int64.self)
+                .fetchAll(db)
+            guard !ratedIds.isEmpty else { return [] }
+            return try ImageRecord
+                .filter(ratedIds.contains(Column("id")))
+                .order(Column("captureUtc").asc)
+                .fetchAll(db)
+        }) ?? []
+    }
+
     // MARK: - Rating writes
 
     /// Apply a class rating (0-5) to one or more images. Existing
