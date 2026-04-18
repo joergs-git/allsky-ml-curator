@@ -74,6 +74,14 @@ final class EmbeddingPipeline: @unchecked Sendable {
 
     // MARK: - Public API
 
+    /// Fast existence check that does not read / decode the sidecar.
+    /// Used by coverage polling — reading the whole 768-float blob is
+    /// ~ms per frame and starves the main thread when a loop fires it
+    /// for thousands of labels. `fileExists` is one `stat` per call.
+    func sidecarExists(for imagePath: String) -> Bool {
+        FileManager.default.fileExists(atPath: diskURL(for: imagePath).path)
+    }
+
     /// Return the cached embedding if present on disk, without
     /// running Vision. Returns `nil` when there is no sidecar or the
     /// revision in the sidecar doesn't match the current request
