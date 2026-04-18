@@ -26,6 +26,8 @@ struct PreferencesView: View {
     @State private var colorFov:     Double = AppSettings.shared.colorFovDeg
     @State private var monoFov:      Double = AppSettings.shared.monoFovDeg
     @State private var horizonExclusion: Double = AppSettings.shared.horizonExclusionDeg
+    @State private var colorNorthOffset: Double = AppSettings.shared.colorNorthOffsetDeg
+    @State private var monoNorthOffset:  Double = AppSettings.shared.monoNorthOffsetDeg
 
     // MARK: - Training tab state
 
@@ -192,6 +194,29 @@ struct PreferencesView: View {
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
+            }
+
+            Section("Compass alignment") {
+                LabeledContent("Color north offset (°)") {
+                    TextField("0", value: $colorNorthOffset, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 140)
+                        .onChange(of: colorNorthOffset) { _, new in
+                            AppSettings.shared.colorNorthOffsetDeg = new
+                        }
+                }
+                LabeledContent("Mono north offset (°)") {
+                    TextField("0", value: $monoNorthOffset, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 140)
+                        .onChange(of: monoNorthOffset) { _, new in
+                            AppSettings.shared.monoNorthOffsetDeg = new
+                        }
+                }
+                Text("Rotation, in degrees, of true north away from straight-up-in-the-frame. 0° when a compass-aligned rig shows north at the top; positive rotates clockwise (as the image prints on screen). Only used by the v2 cloud-motion bearing feature — safe to leave at 0 until then.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Section {
