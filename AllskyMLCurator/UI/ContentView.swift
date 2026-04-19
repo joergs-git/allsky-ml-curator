@@ -50,6 +50,7 @@ struct ContentView: View {
     @ObservedObject private var sync = SyncEngine.shared
     @ObservedObject private var classifier = ClassifierEngine.shared
     @ObservedObject private var autoRater = AutonomousRater.shared
+    @ObservedObject private var warmer = EmbeddingWarmer.shared
 
     /// Alert payload shown after a one-shot auto-rate pass completes
     /// (either with a summary or with a gate error).
@@ -116,14 +117,13 @@ struct ContentView: View {
             }
         }
         .task {
-            // Background warmer: extract embeddings for every rated
-            // frame once at launch, independently of what the user
-            // scrolls over. The MatrixTileCell .task path only fires
-            // for visible tiles, which can leave hundreds of rated
-            // frames without embeddings after a session of rapid
-            // Cmd+A rating — the classifier then sees only one class
-            // and refuses to train. This catches up the gap.
-            await warmRatedEmbeddings()
+            // Launch-time kick of the embedding warmer. The warmer
+            // itself lives in `EmbeddingWarmer.shared` so Preferences →
+            // Advanced and the Embeddings chip can retrigger it
+            // mid-session (the launch-time snapshot misses anything
+            // the user rates after the app started, which left brain
+            // badges silently absent until 0.4.1).
+            EmbeddingWarmer.shared.run()
         }
         .task {
             // Rehydrate the last trained classifier on launch so
@@ -435,23 +435,57 @@ struct ContentView: View {
         return .orange
     }
 
-    /// Horizontal progress gauge for embedding coverage. Animates when
-    /// the warmer is making progress.
+    /// Horizontal progress gauge for embedding coverage. Animates
+    /// while the warmer is actively running. Clicking re-triggers
+    /// `EmbeddingWarmer.run()` so a mid-session catch-up pass picks
+    /// up anything rated after the launch-time pass finished — the
+    /// fix for the "chip stuck at X / Y" symptom where the user had
+    /// rated ~2.4k frames but the warmer's launch snapshot was
+    /// already closed.
     private var embeddingGauge: some View {
-        GaugeChip(
-            title: "Embeddings",
-            value: Double(embeddedCount),
-            range: 0...Double(max(items.count, 1)),
-            primaryText: "\(embeddedCount) / \(items.count)",
-            secondaryText: embeddedCount >= max(items.count, 1)
-                ? "complete"
-                : "warming…",
-            iconName: "cpu",
-            iconAnimates: embeddedCount < items.count && items.count > 0,
-            tint: embeddedCount >= max(items.count, 1) ? .green : .blue,
-            nightMode: nightMode
-        )
-        .help("Vision FeaturePrint sidecar coverage — warms in the background")
+        Button {
+            EmbeddingWarmer.shared.run()
+        } label: {
+            GaugeChip(
+                title: "Embeddings",
+                value: Double(embeddedCount),
+                range: 0...Double(max(items.count, 1)),
+                primaryText: "\(embeddedCount) / \(items.count)",
+                secondaryText: embeddingGaugeSecondaryText,
+                iconName: "cpu",
+                iconAnimates: warmer.isRunning,
+                tint: embeddingGaugeTint,
+                nightMode: nightMode
+            )
+        }
+        .buttonStyle(.plain)
+        .help(embeddingGaugeHelpText)
+        .disabled(warmer.isRunning && warmer.phase == .scanning)
+    }
+
+    private var embeddingGaugeSecondaryText: String {
+        if warmer.isRunning {
+            switch warmer.phase {
+            case .scanning:  return "scanning…"
+            case .rated:     return "rated \(warmer.done)/\(warmer.total)"
+            case .unrated:   return "unrated \(warmer.done)/\(warmer.total)"
+            case .idle:      return "warming…"
+            }
+        }
+        if embeddedCount >= max(items.count, 1) { return "complete" }
+        return "click to re-run"
+    }
+
+    private var embeddingGaugeTint: Color {
+        if warmer.isRunning { return .blue }
+        return embeddedCount >= max(items.count, 1) ? .green : .orange
+    }
+
+    private var embeddingGaugeHelpText: String {
+        if warmer.isRunning {
+            return "Vision FeaturePrint warmer is running — click again does nothing until it finishes."
+        }
+        return "Vision FeaturePrint sidecar coverage. Click to re-run the warmer if the chip looks stuck after a rating burst."
     }
 
     /// Sync gauge — no percentage, just a status orb + timestamp.
@@ -723,65 +757,6 @@ struct ContentView: View {
         isLoading = false
     }
 
-    /// Walk every image (rated first, unrated second) and extract any
-    /// missing embedding sidecar so the classifier can produce a
-    /// prediction for every tile it's asked about. The pipeline's
-    /// internal AsyncSemaphore caps concurrency at 3 so this doesn't
-    /// saturate the SMB channel — work just keeps flowing in the
-    /// background while the user rates.
-    ///
-    /// Why two passes: rated frames feed the training set and get
-    /// priority (nothing else works without them); unrated frames
-    /// feed the *prediction* side — without their embeddings the
-    /// classifier can't brain-badge any unrated tile in the matrix,
-    /// which is exactly the symptom the user hit when >95 % of
-    /// unrated frames had no sidecar and all brain badges were
-    /// silently absent. The unrated phase also pings
-    /// `classifier.refreshPredictions()` every 100 frames so the
-    /// matrix fills in brain badges progressively rather than
-    /// jumping from none to all after the whole pass finishes.
-    private func warmRatedEmbeddings() async {
-        let rated = await ImageLibrary.shared.fetchRatedImages()
-        let unrated = await ImageLibrary.shared.fetchUnratedImages()
-
-        await Task.detached(priority: .utility) {
-            // Rated first — no prediction refresh needed mid-pass,
-            // since predictions for rated frames are never shown
-            // (rated tiles always show stars instead).
-            for image in rated {
-                if Task.isCancelled { return }
-                if EmbeddingPipeline.shared.sidecarExists(for: image.filePath) {
-                    continue
-                }
-                _ = await EmbeddingPipeline.shared.generate(
-                    for: image.filePath,
-                    cameraType: image.cameraSource.cameraType
-                )
-            }
-
-            // Unrated second — each newly-embedded frame unlocks a
-            // brain badge, so refresh predictions every 100 new
-            // embeddings and at the end.
-            var newlyEmbedded = 0
-            for image in unrated {
-                if Task.isCancelled { return }
-                if EmbeddingPipeline.shared.sidecarExists(for: image.filePath) {
-                    continue
-                }
-                _ = await EmbeddingPipeline.shared.generate(
-                    for: image.filePath,
-                    cameraType: image.cameraSource.cameraType
-                )
-                newlyEmbedded += 1
-                if newlyEmbedded.isMultiple(of: 100) {
-                    await ClassifierEngine.shared.refreshPredictions()
-                }
-            }
-            if newlyEmbedded > 0 {
-                await ClassifierEngine.shared.refreshPredictions()
-            }
-        }.value
-    }
 }
 
 #Preview {

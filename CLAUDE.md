@@ -1,7 +1,7 @@
 # Allsky-ML-Curator — Claude Code Master Document
 
 > Native macOS (Apple Silicon, Metal-accelerated) image curator with on-device ML.
-> **Version:** 0.4.0 — rate → retrain → auto-rate → inspect → targeted re-ingest → remove-wrong-ones workflow is end-to-end.
+> **Version:** 0.4.1 — rate → retrain → auto-rate → inspect → targeted re-ingest → remove-wrong-ones workflow is end-to-end. Embedding warmer is now re-triggerable mid-session (clickable Embeddings chip + Preferences button).
 
 ---
 

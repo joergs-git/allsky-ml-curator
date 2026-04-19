@@ -4,6 +4,37 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.4.1] — 2026-04-19
+
+Fixes the "chip stuck at X / Y" symptom where the Embeddings gauge
+sat at a fraction of the rated total for the rest of the session
+after a heavy rating burst. Root cause: the embedding warmer was
+wired into the root view's `.task { }` modifier, which runs exactly
+once at launch and snapshots the rated-image list before the user
+starts working. Any frames rated *during* the session stayed
+unembedded, the classifier trained on fewer labels than it showed,
+and the matrix never gained brain badges for those frames.
+
+### Added
+- **`EmbeddingWarmer` engine** — the two-phase (rated → unrated)
+  warmer is now a first-class singleton with observable
+  `isRunning` / `phase` / `done` / `total` / `newlyEmbedded` state
+  and `run()` / `cancel()` methods. Re-entrant: calling `run()`
+  while a pass is already executing is a no-op.
+- **Embeddings chip is now clickable.** Clicking the toolbar chip
+  retriggers the warmer. Progress + phase labels update live
+  ("scanning…", "rated 1234 / 14900", "unrated …", "complete",
+  "click to re-run").
+- **Preferences → Advanced → Embedding warmer** — new section with
+  full description, a live progress bar, and a Re-run / Cancel
+  toggle for the detailed view.
+
+### Changed
+- Launch-time trigger (`.task { … }` in `ContentView`) now calls
+  `EmbeddingWarmer.shared.run()` instead of an inline private
+  method, so the same code path drives the first pass and every
+  subsequent retrigger.
+
 ## [0.4.0] — 2026-04-19
 
 Triage wave. The MVP workflow now supports *curating the library*

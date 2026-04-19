@@ -46,6 +46,7 @@ struct PreferencesView: View {
     @State private var isRebuildingThumbnails: Bool = false
     @State private var rebuildProgress: ThumbnailCache.RebuildProgress?
     @State private var rebuildTask: Task<Void, Never>?
+    @ObservedObject private var warmer = EmbeddingWarmer.shared
 
     // MARK: - Supabase state
 
@@ -463,6 +464,40 @@ struct PreferencesView: View {
                 .padding(.vertical, 4)
             }
 
+            Section("Embedding warmer") {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Re-run Vision FeaturePrint warmer")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Walks every rated frame first (so ⌘T has something to train on) then every unrated frame (so the matrix can show brain badges), writing a `.fp` sidecar for anything that's missing. The launch-time warmer snapshots the rated list exactly once, so any frames you rate *during* the session stay unembedded until this button re-snapshots and catches them up. Safe to run any time — `sidecarExists` guards skip every frame that's already cached.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if warmer.isRunning {
+                            embeddingWarmerProgressView
+                                .padding(.top, 4)
+                        } else if let finished = warmer.lastFinishedAt {
+                            Text("Last finished: \(finished.formatted(date: .omitted, time: .shortened))  ·  \(warmer.lastSummary ?? "done")")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .padding(.top, 4)
+                        }
+                    }
+                    Spacer()
+                    if warmer.isRunning {
+                        Button("Cancel") {
+                            warmer.cancel()
+                        }
+                    } else {
+                        Button("Re-run…") {
+                            warmer.run()
+                        }
+                        .disabled(isPurging)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+
             Section("Thumbnail repair") {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -569,6 +604,33 @@ struct PreferencesView: View {
         purgeStatus = ok
             ? "Bookmark saved — access restored for \(url.path)."
             : "Bookmark save failed. Check Console.app for details."
+    }
+
+    @ViewBuilder private var embeddingWarmerProgressView: some View {
+        let fraction: Double = {
+            guard warmer.total > 0 else { return 0 }
+            return Double(warmer.done) / Double(warmer.total)
+        }()
+        VStack(alignment: .leading, spacing: 2) {
+            ProgressView(value: fraction)
+                .progressViewStyle(.linear)
+            Text(embeddingWarmerProgressLabel)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var embeddingWarmerProgressLabel: String {
+        switch warmer.phase {
+        case .idle:
+            return "idle"
+        case .scanning:
+            return "Scanning the library…"
+        case .rated:
+            return "Rated phase — \(warmer.done) of \(warmer.total) walked, \(warmer.newlyEmbedded) new sidecar(s) written"
+        case .unrated:
+            return "Unrated phase — \(warmer.done) of \(warmer.total) walked, \(warmer.newlyEmbedded) new sidecar(s) written"
+        }
     }
 
     private func startThumbnailRebuild() {
