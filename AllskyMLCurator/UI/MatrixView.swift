@@ -129,6 +129,9 @@ struct MatrixView: View {
                             .onTapGesture {
                                 handleClick(item: item, index: index)
                             }
+                            .contextMenu {
+                                contextMenu(for: item)
+                            }
                         }
                     }
                     .padding(4)
@@ -170,25 +173,48 @@ struct MatrixView: View {
                     secondaryButton: .cancel()
                 )
             }
-            // ⌘⌫ dispatched through a hidden button — macOS routes
-            // Command-key combos via the responder / menu chain
-            // before `.onKeyPress` sees them, so a plain switch on
-            // press.key never fires for ⌘⌫. A zero-opacity button
-            // with the correct keyboardShortcut picks it up
-            // globally for the focused window (same trick used for
-            // ⌘⇧I in ContentView). Bare Delete / ⌦ keep working
-            // through `.onKeyPress` for users who prefer them.
-            .background(
-                Button("") { requestDeleteSelection() }
-                    .keyboardShortcut(.delete, modifiers: [.command])
-                    .opacity(0)
-            )
+            // ⌘⌫ comes through the Edit → Delete Selected menu
+            // command registered at App.commands level; it posts
+            // `.deleteSelectedImagesRequested` which we handle here.
+            // Every selection-aware view listens, and whichever one
+            // currently holds a non-empty selection is the one that
+            // presents the confirm alert (the others early-return).
+            .onReceive(NotificationCenter.default.publisher(
+                for: .deleteSelectedImagesRequested
+            )) { _ in
+                requestDeleteSelection()
+            }
         }
     }
 
     private func requestDeleteSelection() {
         guard !selectedIds.isEmpty else { return }
         deletePrompt = DeletePrompt(ids: Array(selectedIds))
+    }
+
+    /// Per-tile context menu. Right-clicking a tile that's **not**
+    /// already in the selection shifts the selection onto it first,
+    /// so "Delete 1 highlighted image" always reflects the tile the
+    /// user actually clicked. Clicking inside an existing selection
+    /// deletes the whole set.
+    @ViewBuilder
+    private func contextMenu(
+        for item: ImageLibrary.ImageListItem
+    ) -> some View {
+        let effectiveIds = selectedIds.contains(item.id)
+            ? selectedIds
+            : [item.id]
+        let count = effectiveIds.count
+        Button("Delete \(count) highlighted image\(count == 1 ? "" : "s")",
+               systemImage: "trash") {
+            if !selectedIds.contains(item.id) {
+                selectedIds = [item.id]
+                cursorId = item.id
+                anchorId = item.id
+                onSelectionChange(selectedIds)
+            }
+            deletePrompt = DeletePrompt(ids: Array(effectiveIds))
+        }
     }
 
     // MARK: - Deletion

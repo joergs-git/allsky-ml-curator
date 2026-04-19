@@ -34,6 +34,19 @@ struct AllskyMLCuratorApp: App {
                     NSApplication.shared.orderFrontStandardAboutPanel(nil)
                 }
             }
+            // Edit → Delete Selected. Registered at the Commands
+            // level so macOS's standard responder chain routes
+            // ⌘⌫ to it — the .background + .keyboardShortcut(.delete,
+            // modifiers: .command) trick on an opacity-0 Button did
+            // not reliably pick the combo up.
+            CommandGroup(after: .pasteboard) {
+                Button("Delete Selected Images") {
+                    NotificationCenter.default.post(
+                        name: .deleteSelectedImagesRequested, object: nil
+                    )
+                }
+                .keyboardShortcut(.delete, modifiers: .command)
+            }
         }
 
         Settings {
@@ -61,4 +74,10 @@ struct AllskyMLCuratorApp: App {
 extension Notification.Name {
     static let openAllskyFolderRequested =
         Notification.Name("AllskyMLCurator.openAllskyFolderRequested")
+    /// Posted when the user triggers ⌘⌫ / the Edit → Delete menu
+    /// item / the tile context menu. Every selection-aware view
+    /// (MatrixView, ListView) subscribes and presents its own
+    /// confirmation dialog if it owns a non-empty selection.
+    static let deleteSelectedImagesRequested =
+        Notification.Name("AllskyMLCurator.deleteSelectedImagesRequested")
 }

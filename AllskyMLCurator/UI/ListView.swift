@@ -67,6 +67,9 @@ struct ListView: View {
                                 .onTapGesture {
                                     handleClick(item: item, index: index)
                                 }
+                                .contextMenu {
+                                    contextMenu(for: item)
+                                }
                         }
                     }
                 }
@@ -102,17 +105,37 @@ struct ListView: View {
                     secondaryButton: .cancel()
                 )
             }
-            .background(
-                Button("") { requestDeleteSelection() }
-                    .keyboardShortcut(.delete, modifiers: [.command])
-                    .opacity(0)
-            )
+            .onReceive(NotificationCenter.default.publisher(
+                for: .deleteSelectedImagesRequested
+            )) { _ in
+                requestDeleteSelection()
+            }
         }
     }
 
     private func requestDeleteSelection() {
         guard !selectedIds.isEmpty else { return }
         deletePrompt = DeletePrompt(ids: Array(selectedIds))
+    }
+
+    @ViewBuilder
+    private func contextMenu(
+        for item: ImageLibrary.ImageListItem
+    ) -> some View {
+        let effectiveIds = selectedIds.contains(item.id)
+            ? selectedIds
+            : [item.id]
+        let count = effectiveIds.count
+        Button("Delete \(count) highlighted image\(count == 1 ? "" : "s")",
+               systemImage: "trash") {
+            if !selectedIds.contains(item.id) {
+                selectedIds = [item.id]
+                cursorId = item.id
+                anchorId = item.id
+                onSelectionChange(selectedIds)
+            }
+            deletePrompt = DeletePrompt(ids: Array(effectiveIds))
+        }
     }
 
     // MARK: - Header
