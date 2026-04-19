@@ -127,18 +127,26 @@ final class ClassifierEngine: ObservableObject {
         var iterations: Int
         var learningRate: Float
         var l2: Float
-        var clearClassBoost: Float
+        /// Per-RatingClass multiplier applied on top of inverse-frequency
+        /// weighting. `[0]` → class 1, `[4]` → class 5. Length is
+        /// always 5 (clamped in `current()`); values < 1 suppress a
+        /// class, values > 1 over-weight it.
+        var classBoosts: [Float]
 
         /// Read live from AppSettings so the Preferences → Training
         /// sliders take effect on the *next* ⌘T without needing to
         /// restart the app. Re-instantiated at the start of every
         /// train() call.
         static func current() -> Hyperparameters {
-            Hyperparameters(
+            let raw = AppSettings.shared.classWeightBoosts
+            let boosts = (0..<5).map { i in
+                Float(i < raw.count ? raw[i] : 1.0)
+            }
+            return Hyperparameters(
                 iterations: AppSettings.shared.trainingIterations,
                 learningRate: Float(AppSettings.shared.trainingLearningRate),
                 l2: Float(AppSettings.shared.trainingL2),
-                clearClassBoost: Float(AppSettings.shared.clearClassBoost)
+                classBoosts: boosts
             )
         }
     }
@@ -500,14 +508,19 @@ final class ClassifierEngine: ObservableObject {
         classCounts: [Int],
         samples: [LabeledSample]
     ) -> [Float] {
-        // Inverse-frequency weights with an extra "clear-sky" boost on
-        // classes 4 and 5 (indices 3 and 4) — Rheine nights are
-        // dominantly cloudy, rare samples mustn't drown.
+        // Inverse-frequency weights with a per-class multiplicative
+        // boost from `hp.classBoosts`. Starting in 0.4.2 every class
+        // has its own tunable knob; before that a single
+        // `clearClassBoost` was applied uniformly to classes 4 + 5
+        // (c >= 3) — which over-collapsed class 1 at the 14.9k-label
+        // scale, since the boosted-but-already-bright class-5 samples
+        // dominated the gradient and class-1 samples were starved
+        // below the decision boundary.
         let total = Float(samples.count)
         var classWeights = [Float](repeating: 1, count: numClasses)
         for c in 0..<numClasses where classCounts[c] > 0 {
             let invFreq = total / Float(classCounts[c] * numClasses)
-            let boost: Float = (c >= 3) ? hp.clearClassBoost : 1.0
+            let boost = c < hp.classBoosts.count ? hp.classBoosts[c] : 1.0
             classWeights[c] = invFreq * boost
         }
         // Normalise so the mean weight stays around 1 — keeps the

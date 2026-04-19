@@ -238,11 +238,54 @@ final class AppSettings {
         set { defaults.set(newValue, forKey: Key.trainingL2) }
     }
 
-    /// Multiplicative boost applied to rare clear-sky classes (4 and 5)
-    /// on top of inverse-frequency weighting.
-    var clearClassBoost: Double {
-        get { defaults.double(forKey: Key.clearBoost, default: 3.0) }
-        set { defaults.set(newValue, forKey: Key.clearBoost) }
+    /// Multiplicative boost applied per RatingClass (1…5) on top of
+    /// inverse-frequency weighting. `[0]` is class 1 (full clouds),
+    /// `[4]` is class 5 (clear).
+    ///
+    /// Replaces the single `clearClassBoost` knob in 0.4.2 — in
+    /// practice the *under-represented* class on a given library
+    /// isn't always 4 + 5. At Rheine a 14.9k-label dataset collapsed
+    /// class 1 to 3 % recall because the blanket "boost 4 + 5" rule
+    /// over-weighted bright overcast samples that visually resembled
+    /// class 5, turning every class-1 sample into low-priority
+    /// gradient noise. A per-class vector lets the curator lift the
+    /// actually-failing class without collateral damage.
+    ///
+    /// Migration (0.4.1 → 0.4.2): when the new per-class keys are
+    /// absent but the legacy `ml.clearClassBoost` was set, return
+    /// `[1, 1, 1, legacy, legacy]` so an existing install keeps its
+    /// previous behaviour across the upgrade. Otherwise default to
+    /// all-ones (pure inverse-frequency).
+    var classWeightBoosts: [Double] {
+        get {
+            if defaults.object(forKey: Key.classBoost1) != nil {
+                return (0..<5).map { i in
+                    defaults.double(forKey: Self.classBoostKey(i), default: 1.0)
+                }
+            }
+            if defaults.object(forKey: Key.clearBoost) != nil {
+                let legacy = defaults.double(forKey: Key.clearBoost)
+                return [1.0, 1.0, 1.0, legacy, legacy]
+            }
+            return [1.0, 1.0, 1.0, 1.0, 1.0]
+        }
+        set {
+            let values = Array(newValue.prefix(5))
+            for (i, v) in values.enumerated() {
+                defaults.set(v, forKey: Self.classBoostKey(i))
+            }
+        }
+    }
+
+    private static func classBoostKey(_ index: Int) -> String {
+        switch index {
+        case 0: return Key.classBoost1
+        case 1: return Key.classBoost2
+        case 2: return Key.classBoost3
+        case 3: return Key.classBoost4
+        case 4: return Key.classBoost5
+        default: return Key.classBoost1
+        }
     }
 
     /// Reset every training-side and autonomous-mode hyperparameter to
@@ -253,6 +296,11 @@ final class AppSettings {
         defaults.removeObject(forKey: Key.trainingIter)
         defaults.removeObject(forKey: Key.trainingL2)
         defaults.removeObject(forKey: Key.clearBoost)
+        defaults.removeObject(forKey: Key.classBoost1)
+        defaults.removeObject(forKey: Key.classBoost2)
+        defaults.removeObject(forKey: Key.classBoost3)
+        defaults.removeObject(forKey: Key.classBoost4)
+        defaults.removeObject(forKey: Key.classBoost5)
         defaults.removeObject(forKey: Key.autonomousMin)
         defaults.removeObject(forKey: Key.autonomousConfidence)
     }
@@ -289,7 +337,12 @@ final class AppSettings {
         static let horizonExclusion = "camera.horizonExclusionDeg"
         static let autonomousMin = "autonomous.minLabels"
         static let autonomousConfidence = "autonomous.confidenceThreshold"
-        static let clearBoost = "ml.clearClassBoost"
+        static let clearBoost = "ml.clearClassBoost"  // legacy — kept for migration
+        static let classBoost1 = "ml.classBoost.1"
+        static let classBoost2 = "ml.classBoost.2"
+        static let classBoost3 = "ml.classBoost.3"
+        static let classBoost4 = "ml.classBoost.4"
+        static let classBoost5 = "ml.classBoost.5"
         static let trainingLR = "ml.learningRate"
         static let trainingIter = "ml.iterations"
         static let trainingL2 = "ml.l2"

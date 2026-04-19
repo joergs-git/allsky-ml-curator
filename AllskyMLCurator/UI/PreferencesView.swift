@@ -34,7 +34,7 @@ struct PreferencesView: View {
     @State private var trainingLR: Double       = AppSettings.shared.trainingLearningRate
     @State private var trainingIterations: Int  = AppSettings.shared.trainingIterations
     @State private var trainingL2: Double       = AppSettings.shared.trainingL2
-    @State private var clearBoost: Double       = AppSettings.shared.clearClassBoost
+    @State private var classBoosts: [Double]    = AppSettings.shared.classWeightBoosts
     @State private var autoThreshold: Double    = AppSettings.shared.autonomousConfidenceThreshold
     @State private var autoMinLabels: Int       = AppSettings.shared.autonomousMinLabels
 
@@ -288,13 +288,16 @@ struct PreferencesView: View {
                     displayFormat: "%.4f"
                 ) { new in AppSettings.shared.trainingL2 = new }
 
-                sliderRow(
-                    label: "Clear-sky class boost",
-                    value: $clearBoost,
-                    range: 1.0...5.0,
-                    step: 0.1,
-                    displayFormat: "%.1f×"
-                ) { new in AppSettings.shared.clearClassBoost = new }
+            }
+
+            Section("Per-class boost (× inverse-frequency)") {
+                ForEach(0..<5, id: \.self) { index in
+                    classBoostRow(index: index)
+                }
+                Text("Each slider is a multiplier on top of inverse-frequency weighting. Start every class at 1.0× for pure balance. If a class keeps losing its share of the gradient (low recall despite many samples), raise *that* class. If a class gets over-predicted, lower it. The 0.4.1 default boosted classes 4 + 5 blindly, which collapsed class 1 on Rheine's library; 0.4.2 switches to a per-class vector so the knob targets the actual failure.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Section("Autonomous auto-rate (⌘⇧A)") {
@@ -322,7 +325,7 @@ struct PreferencesView: View {
                         trainingLR         = AppSettings.shared.trainingLearningRate
                         trainingIterations = AppSettings.shared.trainingIterations
                         trainingL2         = AppSettings.shared.trainingL2
-                        clearBoost         = AppSettings.shared.clearClassBoost
+                        classBoosts        = AppSettings.shared.classWeightBoosts
                         autoThreshold      = AppSettings.shared.autonomousConfidenceThreshold
                         autoMinLabels      = AppSettings.shared.autonomousMinLabels
                     }
@@ -398,6 +401,42 @@ struct PreferencesView: View {
             .onChange(of: value.wrappedValue) { _, new in
                 onCommit(new)
             }
+        }
+    }
+
+    /// One row in the per-class boost slider section. Lazily clamps
+    /// `classBoosts.count` to 5 so the binding is safe even if the
+    /// stored vector was ever truncated.
+    @ViewBuilder private func classBoostRow(index: Int) -> some View {
+        let binding = Binding<Double>(
+            get: {
+                guard index < classBoosts.count else { return 1.0 }
+                return classBoosts[index]
+            },
+            set: { new in
+                while classBoosts.count <= index { classBoosts.append(1.0) }
+                classBoosts[index] = new
+            }
+        )
+        sliderRow(
+            label: classBoostLabel(for: index),
+            value: binding,
+            range: 0.1...5.0,
+            step: 0.1,
+            displayFormat: "%.1f×"
+        ) { _ in
+            AppSettings.shared.classWeightBoosts = classBoosts
+        }
+    }
+
+    private func classBoostLabel(for index: Int) -> String {
+        switch index {
+        case 0: return "1 · full clouds"
+        case 1: return "2 · mostly clouds"
+        case 2: return "3 · some clouds"
+        case 3: return "4 · little / thin"
+        case 4: return "5 · clear"
+        default: return "class \(index + 1)"
         }
     }
 

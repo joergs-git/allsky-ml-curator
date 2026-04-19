@@ -1,7 +1,7 @@
 # Allsky-ML-Curator — Claude Code Master Document
 
 > Native macOS (Apple Silicon, Metal-accelerated) image curator with on-device ML.
-> **Version:** 0.4.1 — rate → retrain → auto-rate → inspect → targeted re-ingest → remove-wrong-ones workflow is end-to-end. Embedding warmer is now re-triggerable mid-session (clickable Embeddings chip + Preferences button).
+> **Version:** 0.4.2 — rate → retrain → auto-rate → inspect → targeted re-ingest → remove-wrong-ones workflow is end-to-end. Embedding warmer is re-triggerable mid-session; class weighting now uses a per-class boost vector (5 sliders) instead of a single clear-sky multiplier.
 
 ---
 
@@ -52,7 +52,7 @@ The labeled dataset has three downstream consumers:
 4. **Reflection (`R`) and transitional (`T`) are orthogonal flags.** `labels.class` (0-5) coexists with `reflection_flag` + `transitional_flag`. Transitional labels carry `sample_weight=0.5` and don't count toward class recall.
 5. **No manual quadrant / directional tagging.** v1 is full-disk only. Cloud motion is derived automatically via Vision translational registration + per-camera north-offset calibration.
 6. **Extend the astro-weather Supabase project — never spin up a new one.** All new tables (`ml_training_samples`, `ml_predictions`, `ml_model_metadata`) live alongside `cloudwatcher_readings` so joins stay trivial.
-7. **Class-5 (clear) gets a 3× boost on top of inverse-frequency weighting.** Rheine nights are dominantly cloudy; without the boost, rare clear samples are statistically invisible. Boost is live-tunable in Preferences → Training.
+7. **Class weighting is a per-class vector, not a single knob.** Inverse-frequency weighting is applied first, then each RatingClass gets its own multiplicative boost from `AppSettings.classWeightBoosts` (5 sliders in Preferences → Training, range 0.1× … 5.0×, default all 1.0×). The 0.4.1-and-earlier "blanket clear-class boost × 3 on classes 4 + 5" was removed in 0.4.2 because it collapsed class 1 on large libraries; the legacy `ml.clearClassBoost` key is migrated automatically (→ `[1, 1, 1, legacy, legacy]`).
 8. **Autonomous mode bounds confirmation bias.** Auto-labeled rows have `source='auto'` (provisional, excluded from retrain) or `source='auto_confirmed'` (weighted 0.3×). Autonomous mode is gated behind a minimum human-label count (default 200), live-tunable in Preferences → Training.
 9. **Classical Finder / Excel selection semantics.** Plain click / plain arrow / Page / Home / End moves **both** cursor and anchor onto the new tile and collapses selection to `{cursor}`. Shift+arrow / Shift+click / Shift+Page extends via a **single linear range** `linearRange(anchorIndex, cursorIndex)` (row-major, inclusive) for horizontal AND vertical — no row-aligned rectangle, no single-cell horizontal special case. Cursor + anchor are tracked as item IDs, not list indices, so list changes preserve the highlighted tile by identity. **Do not flip this model without an explicit user ask** — every previous deviation was a failed UX attempt. Canonical reference: `feedback_stable_selection_anchor.md` in memory.
 10. **Classifier weights blob is version-tagged by featureDim.** `ClassifierEngine.encodeWeights` emits a CMLW v1 header with featureDim; `decodeWeights` returns nil on mismatch; `restoreLatestModel()` falls back to "untrained" silently so growing the aux vector doesn't crash a restore.

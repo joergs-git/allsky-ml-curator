@@ -4,6 +4,30 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.4.2] — 2026-04-19
+
+Replaces the single `clearClassBoost` setting with a **per-class
+boost vector**. The previous knob applied one multiplier to classes
+4 + 5 together, which at the 14.9k-label mark collapsed class 1
+(full clouds) to 3 % recall on Rheine's data — the boosted-but-
+already-bright class 5 samples dominated the gradient and pulled
+the linear decision boundary away from class 1. A per-class vector
+lets the curator lift exactly the class that's under-recalled
+without collateral damage to the others.
+
+### Changed
+- **Preferences → Training → Per-class boost.** Five sliders, one
+  per RatingClass (1 full … 5 clear), range 0.1× … 5.0×. Default
+  all 1.0× (pure inverse-frequency, perfectly balanced loss).
+- **`ClassifierEngine.Hyperparameters.classBoosts: [Float]`**
+  replaces the old `clearClassBoost: Float`. Weight computation at
+  `ClassifierEngine.swift:510` now indexes per class instead of the
+  `(c >= 3) ? boost : 1` ternary.
+- **Migration** — reading the new `classWeightBoosts` on a stale
+  install with the legacy `ml.clearClassBoost` key falls back to
+  `[1, 1, 1, legacy, legacy]` so no retrain behaviour change across
+  the 0.4.1 → 0.4.2 upgrade unless the user touches a slider.
+
 ## [0.4.1] — 2026-04-19
 
 Fixes the "chip stuck at X / Y" symptom where the Embeddings gauge
