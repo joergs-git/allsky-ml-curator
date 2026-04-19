@@ -436,7 +436,18 @@ struct InfoSidePanel: View {
         let filename = (image.filePath as NSString).lastPathComponent
 
         return VStack(alignment: .leading, spacing: 10) {
-            sectionHeader("Frame", icon: "photo.on.rectangle")
+            HStack {
+                sectionHeader("Frame", icon: "photo.on.rectangle")
+                Spacer()
+                Button {
+                    copyFrameDetailsToClipboard(item)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(.caption)
+                }
+                .buttonStyle(.borderless)
+                .help("Copy all frame details to the clipboard")
+            }
 
             // Filename + reveal-in-Finder button on one row.
             HStack(spacing: 8) {
@@ -537,6 +548,57 @@ struct InfoSidePanel: View {
     private func revealInFinder(_ path: String) {
         let url = URL(fileURLWithPath: path)
         NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    /// Build a plain-text dump of every visible field in the Frame
+    /// section and push it onto the macOS pasteboard. Matches the
+    /// order the panel renders them in so what you paste is what
+    /// you just read. Inline text selection stays available for
+    /// grabbing a single value.
+    private func copyFrameDetailsToClipboard(
+        _ item: ImageLibrary.ImageListItem
+    ) {
+        let image = item.image
+        var lines: [String] = []
+        lines.append((image.filePath as NSString).lastPathComponent)
+        lines.append("Path: \(image.filePath)")
+        lines.append("Captured: " +
+            Self.frameDetailDateFormatter.string(from: image.captureUtc))
+        lines.append("Added: " +
+            Self.frameDetailDateFormatter.string(from: image.createdAt))
+        lines.append("Camera: \(image.cameraSource.rawValue)")
+        lines.append("Time of day: \(image.timeOfDay.rawValue)")
+        lines.append(String(format: "Sun alt: %.2f°", image.sunAltDeg))
+        lines.append(String(format: "Sun az: %.2f°",  image.sunAzDeg))
+        lines.append(String(format: "Moon alt: %.2f°", image.moonAltDeg))
+        lines.append(String(format: "Moon az: %.2f°",  image.moonAzDeg))
+        lines.append(String(format: "Moon phase: %.0f %%", image.moonPhase * 100))
+        if let sky = image.cloudwatcherSkyTempC {
+            lines.append(String(format: "Sky temp: %.1f °C", sky))
+        }
+        if let cloud = image.meteoblueTotalCloud {
+            lines.append(String(format: "Cloud forecast: %.0f %%", cloud))
+        }
+        if let seeing = image.meteoblueSeeingArcsec {
+            lines.append(String(format: "Seeing forecast: %.1f″", seeing))
+        }
+        if let exp = image.exposureSec {
+            lines.append(String(format: "Exposure: %.2f s", exp))
+        }
+        if let gain = image.gain {
+            lines.append(String(format: "Gain: %.0f", gain))
+        }
+        if let temp = image.sensorTempC {
+            lines.append(String(format: "Sensor temp: %.1f °C", temp))
+        }
+        lines.append(String(format: "Reflection risk: %.2f",
+                            image.reflectionRiskScore))
+        lines.append(String(format: "Transitional risk: %.2f",
+                            image.transitionalRiskScore))
+
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(lines.joined(separator: "\n"), forType: .string)
     }
 
     private static let frameDetailDateFormatter: DateFormatter = {

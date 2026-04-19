@@ -341,7 +341,7 @@ struct MatrixView: View {
             // Extend from the anchor to the clicked tile. Anchor stays
             // put; cursor lands on the clicked tile.
             cursorId = item.id
-            selectedIds = rowAlignedSelection(
+            selectedIds = linearRange(
                 fromAnchor: anchorIndex, toCursor: index
             )
         } else {
@@ -353,13 +353,14 @@ struct MatrixView: View {
         onSelectionChange(selectedIds)
     }
 
-    /// Row-aligned rectangle between two indices. Single-row ranges
-    /// are contiguous (just the tiles between lo and hi). Multi-row
-    /// ranges fill every intermediate row from column 0 to the last
-    /// column, so Shift+Down selects a full horizontal strip rather
-    /// than a diagonal sliver the column-major arithmetic would
-    /// otherwise produce.
-    private func rowAlignedSelection(
+    /// Simple linear (row-major) range between anchor and cursor,
+    /// inclusive on both ends. Used for every shift operation —
+    /// click, arrow, page, home/end, horizontal or vertical. This is
+    /// the classical list / table selection model: "everything
+    /// between the origin I picked and where the cursor is now",
+    /// and it matches the user's mental model regardless of how the
+    /// range was constructed.
+    private func linearRange(
         fromAnchor anchor: Int, toCursor cursor: Int
     ) -> Set<Int64> {
         guard !items.isEmpty else { return [] }
@@ -367,14 +368,7 @@ struct MatrixView: View {
         let clampedCursor = max(0, min(items.count - 1, cursor))
         let lo = min(clampedAnchor, clampedCursor)
         let hi = max(clampedAnchor, clampedCursor)
-        let loRow = lo / columns
-        let hiRow = hi / columns
-        if loRow == hiRow {
-            return Set(items[lo...hi].map(\.id))
-        }
-        let start = loRow * columns
-        let end = min(items.count - 1, (hiRow + 1) * columns - 1)
-        return Set(items[start...end].map(\.id))
+        return Set(items[lo...hi].map(\.id))
     }
 
     // MARK: - Keyboard
@@ -397,12 +391,10 @@ struct MatrixView: View {
 
         switch press.key {
         case .leftArrow:
-            if shift { shiftHorizontalStep(-1, proxy: proxy) }
-            else     { moveCursor(by: -1, extend: false, proxy: proxy) }
+            moveCursor(by: -1, extend: shift, proxy: proxy)
             return .handled
         case .rightArrow:
-            if shift { shiftHorizontalStep(+1, proxy: proxy) }
-            else     { moveCursor(by: +1, extend: false, proxy: proxy) }
+            moveCursor(by: +1, extend: shift, proxy: proxy)
             return .handled
         case .upArrow:
             moveCursor(by: -columns,   extend: shift, proxy: proxy)
@@ -515,8 +507,8 @@ struct MatrixView: View {
         cursorId = targetId
         if extend {
             // Shift+nav: extend selection from the stable anchor
-            // through the new cursor.
-            selectedIds = rowAlignedSelection(
+            // through the new cursor using the simple linear range.
+            selectedIds = linearRange(
                 fromAnchor: anchorIndex, toCursor: newIndex
             )
         } else {
@@ -529,58 +521,6 @@ struct MatrixView: View {
         onSelectionChange(selectedIds)
         withAnimation(.easeOut(duration: 0.15)) {
             proxy.scrollTo(targetId, anchor: .center)
-        }
-    }
-
-    /// Surgical ±1 cell modification for Shift+Left / Shift+Right.
-    /// Does **not** use the row-aligned rectangle — a multi-row
-    /// block built with Shift+Down should survive horizontal trims.
-    private func shiftHorizontalStep(
-        _ delta: Int, proxy: ScrollViewProxy
-    ) {
-        guard !items.isEmpty else { return }
-        let oldIndex = cursorIndex
-        let newIndex = max(0, min(items.count - 1, oldIndex + delta))
-        guard newIndex != oldIndex else { return }
-
-        let anchorIdx = anchorIndex
-        let oldDistance = abs(oldIndex - anchorIdx)
-        let newDistance = abs(newIndex - anchorIdx)
-
-        if newDistance > oldDistance {
-            // Moving farther from the anchor — extend onto the new
-            // cell. Set.insert is a no-op when the cell was already
-            // in a row-aligned block, which is the exact case the
-            // next shrink-step guard handles below.
-            selectedIds.insert(items[newIndex].id)
-        } else if newDistance < oldDistance {
-            // Moving back toward the anchor. Only remove the cell
-            // we're leaving (oldIndex) when it's at the *far edge*
-            // of the current selection — i.e., no cell further from
-            // the anchor is also selected. Otherwise the cursor was
-            // navigating inside an existing row-aligned block
-            // (Shift+Down built a multi-row rectangle, now
-            // Shift+Left steps back inside it), and removing
-            // oldIndex would silently drill holes in the block.
-            let direction = oldIndex >= anchorIdx ? 1 : -1
-            let beyondIdx = oldIndex + direction
-            let beyondIsSelected = items.indices.contains(beyondIdx)
-                && selectedIds.contains(items[beyondIdx].id)
-            if !beyondIsSelected {
-                selectedIds.remove(items[oldIndex].id)
-            }
-        } else {
-            // Distances equal can only happen with a single step
-            // across the anchor (oldIndex and newIndex on opposite
-            // sides). Swap the two.
-            selectedIds.remove(items[oldIndex].id)
-            selectedIds.insert(items[newIndex].id)
-        }
-
-        cursorId = items[newIndex].id
-        onSelectionChange(selectedIds)
-        withAnimation(.easeOut(duration: 0.15)) {
-            proxy.scrollTo(items[newIndex].id, anchor: .center)
         }
     }
 
