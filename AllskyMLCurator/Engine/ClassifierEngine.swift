@@ -547,9 +547,26 @@ final class ClassifierEngine: ObservableObject {
         }
         let imageById = Dictionary(uniqueKeysWithValues: imageByIdPairs)
 
+        // Night-only mode filters training by sun altitude, matching
+        // the matrix view so what the user sees and what the model
+        // learns stay consistent. Soft filter — rows stay in the DB
+        // for later (e.g. a separate day-classifier).
+        let nightOnly = AppSettings.shared.nightOnlyMode
+        let sunAltMax = AppSettings.shared.nightOnlySunAltMaxDeg
+
+        let eligibleLabels: [LabelRecord]
+        if nightOnly {
+            eligibleLabels = labels.filter { label in
+                guard let image = imageById[label.imageId] else { return false }
+                return image.sunAltDeg <= sunAltMax
+            }
+        } else {
+            eligibleLabels = labels
+        }
+
         var samples: [LabeledSample] = []
-        samples.reserveCapacity(labels.count)
-        for label in labels {
+        samples.reserveCapacity(eligibleLabels.count)
+        for label in eligibleLabels {
             guard let image = imageById[label.imageId] else { continue }
             guard let vector = FeatureVectorBuilder.vector(for: image) else { continue }
             guard label.ratingClass.rawValue >= 1 else { continue }
@@ -566,7 +583,7 @@ final class ClassifierEngine: ObservableObject {
         if let first = samples.first { featureDim = first.features.count }
         return TrainingSetDiagnostics(
             samples: samples,
-            totalRated: labels.count
+            totalRated: eligibleLabels.count
         )
     }
 

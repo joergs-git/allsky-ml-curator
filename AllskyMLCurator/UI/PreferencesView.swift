@@ -38,6 +38,8 @@ struct PreferencesView: View {
     @State private var classBoosts: [Double]    = AppSettings.shared.classWeightBoosts
     @State private var autoThreshold: Double    = AppSettings.shared.autonomousConfidenceThreshold
     @State private var autoMinLabels: Int       = AppSettings.shared.autonomousMinLabels
+    @State private var nightOnlyMode: Bool      = AppSettings.shared.nightOnlyMode
+    @State private var nightOnlySunAltMax: Double = AppSettings.shared.nightOnlySunAltMaxDeg
 
     // MARK: - Advanced tab state
 
@@ -265,6 +267,43 @@ struct PreferencesView: View {
     /// outside these ranges rarely help and make debugging harder.
     private var trainingTab: some View {
         Form {
+            Section("Time-of-day filter") {
+                Toggle(isOn: $nightOnlyMode) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Night-only mode")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Hides day / twilight frames from the matrix AND the classifier's training set. Soft filter — the frames stay in the database, so a separate day-classifier can be trained on them later without re-ingesting. Use when daytime reflections (sun glint, bright overcast ↔ bright clear ambiguity) pollute the model. Toggle off to get everything back.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .onChange(of: nightOnlyMode) { _, new in
+                    AppSettings.shared.nightOnlyMode = new
+                    NotificationCenter.default.post(
+                        name: .nightOnlyFilterChanged, object: nil
+                    )
+                }
+
+                sliderRow(
+                    label: "Max sun altitude",
+                    value: $nightOnlySunAltMax,
+                    range: -18.0 ... -6.0,
+                    step: 0.5,
+                    displayFormat: "%.1f°"
+                ) { new in
+                    AppSettings.shared.nightOnlySunAltMaxDeg = new
+                    NotificationCenter.default.post(
+                        name: .nightOnlyFilterChanged, object: nil
+                    )
+                }
+
+                Text("Standard thresholds: −6° civil darkness · −12° nautical darkness · −18° astronomical night (strictest, no twilight glow at all).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Section("MLP head (2 layers)") {
                 sliderRow(
                     label: "Learning rate",

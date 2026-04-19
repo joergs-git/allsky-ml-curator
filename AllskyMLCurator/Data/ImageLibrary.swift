@@ -40,6 +40,7 @@ final class ImageLibrary: ObservableObject {
         cameraType: CameraType? = nil,
         includeExcluded: Bool = false,
         ratingFilter: RatingFilter = .any,
+        maxSunAltDeg: Double? = nil,
         limit: Int? = nil
     ) async -> [ImageListItem] {
         let reader = Database.shared.reader
@@ -53,6 +54,12 @@ final class ImageLibrary: ObservableObject {
                 if let cameraType {
                     let sources = Self.sources(for: cameraType)
                     builder = builder.filter(sources.contains(ImageRecord.Columns.cameraSource))
+                }
+                if let maxSunAltDeg {
+                    // Night-only filter — drop any frame whose sun is
+                    // higher than this threshold. Soft: the rows stay
+                    // in the table, we just don't surface them.
+                    builder = builder.filter(Column("sunAltDeg") <= maxSunAltDeg)
                 }
                 builder = builder.order(ImageRecord.Columns.captureUtc.asc)
                 if let limit { builder = builder.limit(limit) }

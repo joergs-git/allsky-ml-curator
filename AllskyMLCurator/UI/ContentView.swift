@@ -152,6 +152,11 @@ struct ContentView: View {
         )) { _ in
             showIngestSheet = true
         }
+        .onReceive(NotificationCenter.default.publisher(
+            for: .nightOnlyFilterChanged
+        )) { _ in
+            Task { await reload() }
+        }
         .alert(item: $autoRateAlert) { content in
             Alert(
                 title: Text(content.title),
@@ -758,9 +763,13 @@ struct ContentView: View {
 
     private func reload() async {
         isLoading = true
+        let maxSunAlt: Double? = AppSettings.shared.nightOnlyMode
+            ? AppSettings.shared.nightOnlySunAltMaxDeg
+            : nil
         let loaded = await ImageLibrary.shared.fetchImages(
             cameraType: cameraFilter,
-            ratingFilter: ratingFilter
+            ratingFilter: ratingFilter,
+            maxSunAltDeg: maxSunAlt
         )
         // `.mismatches` is the only filter whose predicate depends on
         // in-memory classifier predictions (not persisted to SQLite),

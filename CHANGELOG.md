@@ -4,6 +4,36 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.5.3] — 2026-04-19
+
+Adds a night-only filter so the classifier doesn't have to fight
+the daytime feature space. After the 0.5.2 mismatch review it was
+clear most class-1 ↔ class-5 confusion came from daytime frames —
+bright overcast and bright clear sky look near-identical in Vision
+FeaturePrint at sun_alt > 0°, and sun-reflection artefacts on the
+color camera dominate whatever cloud signal remains. Filtering
+day / twilight frames out of both the matrix and training lets the
+model specialise on night, where the features actually separate.
+
+### Added
+- **`AppSettings.nightOnlyMode: Bool`** plus
+  **`nightOnlySunAltMaxDeg: Double`** (default −18° = astronomical
+  night, range −18…−6). When the mode is on, `fetchImages` and
+  `ClassifierEngine.loadTrainingSet` both drop frames whose
+  `sun_alt_deg > nightOnlySunAltMaxDeg`.
+- **Preferences → Training → Time-of-day filter** — toggle + slider
+  with standard-threshold legend (civil / nautical / astronomical).
+- **`.nightOnlyFilterChanged` notification** so flipping the toggle
+  in Preferences triggers an immediate matrix reload instead of
+  waiting for the next user-initiated refresh.
+
+### Soft by design
+No rows are deleted or flipped to `is_excluded = 1`. The filter is
+a query-time predicate on `sun_alt_deg`, fully reversible by
+toggling Night-only off. This keeps the door open for a
+**separate** day-classifier on the same dataset later, without a
+re-ingest.
+
 ## [0.5.2] — 2026-04-19
 
 Label-audit workflow. After the 0.5.0 MLP training converged on

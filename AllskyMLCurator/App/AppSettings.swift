@@ -238,6 +238,43 @@ final class AppSettings {
         set { defaults.set(newValue, forKey: Key.trainingL2) }
     }
 
+    /// Night-only filter. When enabled, both the matrix view and the
+    /// classifier's training set drop every frame whose `sun_alt_deg`
+    /// is above `nightOnlySunAltMaxDeg` — i.e. dusk / day frames get
+    /// hidden.
+    ///
+    /// Soft filter: the rows stay in SQLite and can be restored by
+    /// flipping the toggle back off. No `is_excluded` bit is touched,
+    /// so later we can spin up a **separate** day-classifier on the
+    /// same dataset without a re-ingest.
+    ///
+    /// Reason: 0.5.2 hit a class-1 ↔ class-5 ceiling at ~50 % CV
+    /// because bright overcast daytime frames look identical to
+    /// bright clear daytime frames in Vision FeaturePrint space, and
+    /// sun-reflection artefacts dominate any rating signal on the
+    /// color camera at day. Training a night-only classifier removes
+    /// that pollution at the cost of not predicting day frames at
+    /// all — which is acceptable since AstroTriage only cares about
+    /// night frames anyway.
+    var nightOnlyMode: Bool {
+        get { defaults.bool(forKey: Key.nightOnlyMode) }
+        set { defaults.set(newValue, forKey: Key.nightOnlyMode) }
+    }
+
+    /// Sun altitude threshold for night-only mode. Frames with
+    /// `sun_alt_deg > nightOnlySunAltMaxDeg` are hidden when the mode
+    /// is on. Standard anchors:
+    ///   * `-6°`  civil darkness and beyond (keeps civil twilight out)
+    ///   * `-12°` nautical darkness and beyond (looser, quicker to
+    ///            collect samples if the site's sun never drops far)
+    ///   * `-18°` astronomical darkness only (strictest, no twilight
+    ///            glow at all — default, matches what the user asked
+    ///            for: "tatsächlich dunkelheit ohne dämmerung")
+    var nightOnlySunAltMaxDeg: Double {
+        get { defaults.double(forKey: Key.nightOnlySunAltMax, default: -18.0) }
+        set { defaults.set(newValue, forKey: Key.nightOnlySunAltMax) }
+    }
+
     /// Width of the MLP hidden layer. 128 is the 0.5.0 default —
     /// large enough to learn the non-linear "bright cloudy at day"
     /// vs "clear at day" split in Vision FeaturePrint space, small
@@ -360,6 +397,8 @@ final class AppSettings {
         static let trainingIter = "ml.iterations"
         static let trainingL2 = "ml.l2"
         static let mlpHiddenDim = "ml.mlpHiddenDim"
+        static let nightOnlyMode = "ml.nightOnlyMode"
+        static let nightOnlySunAltMax = "ml.nightOnlySunAltMaxDeg"
         static let nightMode = "appearance.nightMode"
     }
 }

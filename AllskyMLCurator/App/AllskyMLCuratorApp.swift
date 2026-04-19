@@ -80,4 +80,10 @@ extension Notification.Name {
     /// confirmation dialog if it owns a non-empty selection.
     static let deleteSelectedImagesRequested =
         Notification.Name("AllskyMLCurator.deleteSelectedImagesRequested")
+    /// Posted when Preferences toggles night-only mode or changes its
+    /// sun-alt threshold. ContentView listens so the matrix refreshes
+    /// immediately rather than staying stale until the next filter
+    /// change or ingest.
+    static let nightOnlyFilterChanged =
+        Notification.Name("AllskyMLCurator.nightOnlyFilterChanged")
 }

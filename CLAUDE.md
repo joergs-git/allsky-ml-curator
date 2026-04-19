@@ -1,7 +1,7 @@
 # Allsky-ML-Curator — Claude Code Master Document
 
 > Native macOS (Apple Silicon, Metal-accelerated) image curator with on-device ML.
-> **Version:** 0.5.2 — rate → retrain → inspect-mismatches → auto-rate → targeted re-ingest → remove-wrong-ones workflow is end-to-end. Classifier is a two-layer MLP (hidden dim tunable in Preferences); training runs on a detached task so the UI stays responsive during ⌘T; rated tiles where the model disagrees get a dashed orange border + predicted-class badge and can be filtered to as a dedicated rating-filter view; embedding warmer is re-triggerable mid-session; class weighting is a per-class boost vector.
+> **Version:** 0.5.3 — rate → retrain → inspect-mismatches → auto-rate → targeted re-ingest → remove-wrong-ones workflow is end-to-end. Classifier is a two-layer MLP (hidden dim tunable in Preferences); training runs on a detached task so the UI stays responsive during ⌘T; night-only filter soft-hides day / twilight frames from matrix + training; rated tiles where the model disagrees get a dashed orange border + predicted-class badge and can be filtered to as a dedicated rating-filter view; embedding warmer is re-triggerable mid-session; class weighting is a per-class boost vector.
 
 ---
 
