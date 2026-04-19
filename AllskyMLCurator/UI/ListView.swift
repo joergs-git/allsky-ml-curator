@@ -400,7 +400,11 @@ struct ListView: View {
         if extend {
             selectedIds = linearRange(fromAnchor: anchorIndex, toCursor: newIndex)
         } else {
+            // Classical Finder rule: plain arrow moves both cursor
+            // and anchor so the next Shift action extends from the
+            // current highlighted row.
             selectedIds = [targetId]
+            anchorId = targetId
         }
         onSelectionChange(selectedIds)
         withAnimation(.easeOut(duration: 0.15)) {

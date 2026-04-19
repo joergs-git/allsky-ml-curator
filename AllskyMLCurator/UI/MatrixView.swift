@@ -506,17 +506,24 @@ struct MatrixView: View {
         let targetId = items[newIndex].id
         cursorId = targetId
         if extend {
-            // Shift+nav: extend selection from the stable anchor
-            // through the new cursor using the simple linear range.
+            // Shift+nav: extend selection from the anchor through
+            // the new cursor using the simple linear range. Anchor
+            // stays pinned across repeated Shift presses so the
+            // block keeps growing / shrinking around the same
+            // origin.
             selectedIds = linearRange(
                 fromAnchor: anchorIndex, toCursor: newIndex
             )
         } else {
-            // Plain nav: cursor moves, selection collapses to the
-            // cursor tile. Anchor does NOT move — that's what lets
-            // the user page through the library and Shift+click or
-            // Shift+arrow back to the original pick.
+            // Plain nav: cursor AND anchor both move onto the new
+            // tile; selection collapses to {cursor}. This is the
+            // classical Finder / Excel rule — the moment the user
+            // arrows to a new tile, that tile becomes the origin
+            // for the *next* Shift action. No separate click is
+            // needed to "set the origin", the cursor is always
+            // the origin.
             selectedIds = [targetId]
+            anchorId = targetId
         }
         onSelectionChange(selectedIds)
         withAnimation(.easeOut(duration: 0.15)) {
