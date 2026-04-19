@@ -238,6 +238,18 @@ final class AppSettings {
         set { defaults.set(newValue, forKey: Key.trainingL2) }
     }
 
+    /// Width of the MLP hidden layer. 128 is the 0.5.0 default —
+    /// large enough to learn the non-linear "bright cloudy at day"
+    /// vs "clear at day" split in Vision FeaturePrint space, small
+    /// enough that full-batch GD on ~15 k samples fits comfortably
+    /// in memory and stays under a minute on Apple Silicon. Raising
+    /// to 256 helps slightly on huge libraries; dropping below ~32
+    /// starts to underfit noticeably.
+    var mlpHiddenDim: Int {
+        get { defaults.integer(forKey: Key.mlpHiddenDim, default: 128) }
+        set { defaults.set(newValue, forKey: Key.mlpHiddenDim) }
+    }
+
     /// Multiplicative boost applied per RatingClass (1…5) on top of
     /// inverse-frequency weighting. `[0]` is class 1 (full clouds),
     /// `[4]` is class 5 (clear).
@@ -301,6 +313,7 @@ final class AppSettings {
         defaults.removeObject(forKey: Key.classBoost3)
         defaults.removeObject(forKey: Key.classBoost4)
         defaults.removeObject(forKey: Key.classBoost5)
+        defaults.removeObject(forKey: Key.mlpHiddenDim)
         defaults.removeObject(forKey: Key.autonomousMin)
         defaults.removeObject(forKey: Key.autonomousConfidence)
     }
@@ -346,6 +359,7 @@ final class AppSettings {
         static let trainingLR = "ml.learningRate"
         static let trainingIter = "ml.iterations"
         static let trainingL2 = "ml.l2"
+        static let mlpHiddenDim = "ml.mlpHiddenDim"
         static let nightMode = "appearance.nightMode"
     }
 }

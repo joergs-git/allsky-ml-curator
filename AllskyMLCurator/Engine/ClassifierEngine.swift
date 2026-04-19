@@ -2,20 +2,29 @@ import Accelerate
 import Foundation
 import GRDB
 
-/// Multi-class logistic-regression head that sits on top of the
-/// Vision FeaturePrint embeddings. Deliberately simple — 5 output
-/// classes (RatingClass 1…5), full-batch gradient descent via
-/// Accelerate matmul, in-memory weights. No mini-batching, no
-/// momentum; at the curator's scale (≤ a few thousand human labels)
-/// convergence happens in a fraction of a second.
+/// Two-layer MLP head sitting on top of the Vision FeaturePrint
+/// embeddings. 5 output classes (RatingClass 1…5), Dense → ReLU →
+/// Dense → softmax, full-batch gradient descent via Accelerate
+/// matmul, in-memory weights. No mini-batching, no momentum; at the
+/// curator's scale (≤ a few tens of thousands of labels) convergence
+/// still happens in a few seconds.
+///
+/// Architecture upgrade (0.4.2 → 0.5.0): the previous linear softmax
+/// head collapsed on Rheine's 14.9k-label library — train accuracy
+/// never rose past ~30 % because the "full clouds at bright day" vs
+/// "clear at bright day" boundary in Vision FeaturePrint space isn't
+/// linearly separable. Adding one hidden ReLU layer (default 128
+/// units, live-tunable in Preferences → Training) gives the head
+/// enough capacity to learn that non-linear cut without a heavy
+/// framework dependency.
 ///
 /// Training / prediction pipeline:
 ///
 ///   1. `train()` loads every image with a current human label,
 ///      reads cached embeddings, builds feature vectors, applies
-///      inverse-frequency class weights with an extra boost for the
-///      rare clear-sky classes (4 & 5), runs ~200 iterations of
-///      softmax-cross-entropy GD, and stores the resulting weights.
+///      inverse-frequency × per-class-boost sample weights, runs
+///      ~200 iterations of full-batch softmax-CE GD over *both*
+///      layers, and stores the resulting weights.
 ///   2. `predict(image:)` rebuilds the feature vector for one frame
 ///      and returns per-class probabilities + the top pick.
 ///
@@ -23,8 +32,10 @@ import GRDB
 /// `model_versions` table (row keyed by a timestamped version string);
 /// on app launch `restoreLatestModel()` rehydrates the most recent row
 /// so predictions are warm immediately without a fresh retrain. The
-/// blob format is a compact little-endian dump — magic, featureDim,
-/// numClasses, weights, bias — decoded in `decodeWeights(_:)`.
+/// blob format is a compact little-endian dump — magic + version 2 +
+/// featureDim + hiddenDim + numClasses + W1 + b1 + W2 + b2 — decoded
+/// in `decodeWeights(_:)`. Older `CMLW v1` (linear logreg) blobs are
+/// silently rejected by the v2 decoder; the user just retrains.
 @MainActor
 final class ClassifierEngine: ObservableObject {
 
@@ -132,6 +143,12 @@ final class ClassifierEngine: ObservableObject {
         /// always 5 (clamped in `current()`); values < 1 suppress a
         /// class, values > 1 over-weight it.
         var classBoosts: [Float]
+        /// Width of the hidden ReLU layer. 0 would degenerate to a
+        /// linear logreg — not worth supporting since that case was
+        /// the root cause of the 0.4.x accuracy ceiling. Clamped to
+        /// at least 16 in `current()` so an accidental 0 in defaults
+        /// doesn't produce an NaN gradient.
+        var hiddenDim: Int
 
         /// Read live from AppSettings so the Preferences → Training
         /// sliders take effect on the *next* ⌘T without needing to
@@ -142,11 +159,13 @@ final class ClassifierEngine: ObservableObject {
             let boosts = (0..<5).map { i in
                 Float(i < raw.count ? raw[i] : 1.0)
             }
+            let hidden = max(16, AppSettings.shared.mlpHiddenDim)
             return Hyperparameters(
                 iterations: AppSettings.shared.trainingIterations,
                 learningRate: Float(AppSettings.shared.trainingLearningRate),
                 l2: Float(AppSettings.shared.trainingL2),
-                classBoosts: boosts
+                classBoosts: boosts,
+                hiddenDim: hidden
             )
         }
     }
@@ -154,11 +173,17 @@ final class ClassifierEngine: ObservableObject {
     private var hp = Hyperparameters.current()
     private let numClasses = 5    // RatingClass 1…5
 
-    /// Trained parameters: row-major W [numFeatures × numClasses] and
-    /// bias [numClasses].
-    private var weights: [Float] = []
-    private var bias: [Float] = []
+    /// Trained parameters — two layers, all row-major:
+    ///  - `weights1` [featureDim × hiddenDim] and `bias1` [hiddenDim]
+    ///    feed the hidden ReLU.
+    ///  - `weights2` [hiddenDim × numClasses] and `bias2` [numClasses]
+    ///    feed the softmax.
+    private var weights1: [Float] = []
+    private var bias1: [Float] = []
+    private var weights2: [Float] = []
+    private var bias2: [Float] = []
     private var featureDim: Int = 0
+    private var hiddenDim: Int = 0
     /// Monotonically increases every time `weights` is replaced
     /// (train(), restoreLatestModel(), clear()). `recomputeAllPredictions`
     /// reads the current value before spawning its detached task and
@@ -286,15 +311,18 @@ final class ClassifierEngine: ObservableObject {
         }
         guard let row else { return }
         guard let decoded = Self.decodeWeights(row.classifierWeights) else {
-            // Either an older blob shape from a previous dev build or a
-            // corrupt row. Leaving the in-memory state untrained means
-            // the toolbar chip will still report "untrained" — the
-            // curator can retrain with ⌘T.
+            // Either an older blob shape (e.g. CMLW v1 logreg from
+            // 0.4.x) or a corrupt row. Leaving the in-memory state
+            // untrained means the toolbar chip will still report
+            // "untrained" — the curator can retrain with ⌘T.
             return
         }
-        weights = decoded.weights
-        bias = decoded.bias
+        weights1 = decoded.weights1
+        bias1 = decoded.bias1
+        weights2 = decoded.weights2
+        bias2 = decoded.bias2
         featureDim = decoded.featureDim
+        hiddenDim = decoded.hiddenDim
         weightsVersion &+= 1
 
         // Unpack the trainAccuracy + duration stashed in `notes`
@@ -328,13 +356,16 @@ final class ClassifierEngine: ObservableObject {
     /// Predict for a single image. Returns `nil` when the classifier
     /// has not been trained yet, or when no cached embedding exists.
     func predict(image: ImageRecord) -> Prediction? {
-        guard !weights.isEmpty, featureDim > 0 else { return nil }
+        guard !weights2.isEmpty, featureDim > 0, hiddenDim > 0 else {
+            return nil
+        }
         guard let vector = FeatureVectorBuilder.vector(for: image),
               vector.count == featureDim else { return nil }
         return Self.runPrediction(
             vector: vector,
-            weights: weights,
-            bias: bias,
+            weights1: weights1, bias1: bias1,
+            weights2: weights2, bias2: bias2,
+            hiddenDim: hiddenDim,
             numClasses: numClasses
         )
     }
@@ -345,16 +376,21 @@ final class ClassifierEngine: ObservableObject {
     /// whose sidecar was only just generated. No-op when the
     /// classifier is empty.
     func refreshPredictions() async {
-        guard !weights.isEmpty, featureDim > 0 else { return }
+        guard !weights2.isEmpty, featureDim > 0, hiddenDim > 0 else {
+            return
+        }
         await recomputeAllPredictions()
     }
 
     /// Clear in-memory model + predictions. Useful when the user
     /// wants to reset before a fresh train.
     func clear() {
-        weights = []
-        bias = []
+        weights1 = []
+        bias1 = []
+        weights2 = []
+        bias2 = []
         featureDim = 0
+        hiddenDim = 0
         summary = nil
         predictions = [:]
         weightsVersion &+= 1
@@ -540,14 +576,17 @@ final class ClassifierEngine: ObservableObject {
 
     // MARK: - Gradient descent
 
-    /// Full-batch softmax cross-entropy gradient descent. Returns the
-    /// final loss + training-set accuracy for the summary row.
+    /// Full-batch softmax-CE gradient descent over the two-layer MLP.
+    /// Trains both layers simultaneously, stores the result in
+    /// `self.weights{1,2}` / `self.bias{1,2}`, returns the final
+    /// weighted loss + unweighted training accuracy for the summary row.
     private func runGradientDescent(
         samples: [LabeledSample],
         sampleWeights: [Float]
     ) -> (loss: Float, accuracy: Float) {
         let N = samples.count
         let D = samples[0].features.count
+        let H = hp.hiddenDim
         let K = numClasses
 
         // Pack X row-major: [N × D]
@@ -561,61 +600,114 @@ final class ClassifierEngine: ObservableObject {
         var Y = [Float](repeating: 0, count: N * K)
         for (i, c) in y.enumerated() { Y[i * K + c] = 1 }
 
-        // Initialise to zeros.
-        weights = [Float](repeating: 0, count: D * K)
-        bias    = [Float](repeating: 0, count: K)
+        // Layer init — He for W1 (ReLU), Xavier-ish for W2.
+        // featureDim hasn't been set yet for the first fresh train;
+        // record it here so downstream snapshots are consistent.
+        featureDim = D
+        hiddenDim = H
+        weights1 = Self.initialHeWeights(inDim: D, outDim: H, seed: 1)
+        bias1    = [Float](repeating: 0, count: H)
+        weights2 = Self.initialHeWeights(inDim: H, outDim: K, seed: 2)
+        bias2    = [Float](repeating: 0, count: K)
 
-        var probs = [Float](repeating: 0, count: N * K)
-        var gradW = [Float](repeating: 0, count: D * K)
-        var gradB = [Float](repeating: 0, count: K)
+        // Forward buffers.
+        var pre1  = [Float](repeating: 0, count: N * H)   // X @ W1 + b1
+        var hAct  = [Float](repeating: 0, count: N * H)   // ReLU(pre1)
+        var probs = [Float](repeating: 0, count: N * K)   // softmax(H @ W2 + b2)
+        // Backward buffers.
+        var dPre1  = [Float](repeating: 0, count: N * H)
+        var dH     = [Float](repeating: 0, count: N * H)
+        var dW1    = [Float](repeating: 0, count: D * H)
+        var dB1    = [Float](repeating: 0, count: H)
+        var dW2    = [Float](repeating: 0, count: H * K)
+        var dB2    = [Float](repeating: 0, count: K)
+
         var finalLoss: Float = 0
 
         for _ in 0..<hp.iterations {
-            // logits = X @ W + b
-            forwardLogits(
-                X: X, W: weights, b: bias,
-                out: &probs, N: N, D: D, K: K
+            forwardMLP(
+                X: X,
+                W1: weights1, b1: bias1,
+                W2: weights2, b2: bias2,
+                pre1: &pre1, hAct: &hAct, probs: &probs,
+                N: N, D: D, H: H, K: K
             )
-            softmaxInPlace(&probs, N: N, K: K)
 
-            // Gradient of softmax-CE w.r.t. logits is (P - Y) / N,
-            // scaled by per-sample weight.
+            // Softmax-CE gradient w.r.t. logits: (P - Y), scaled by
+            // per-sample weight and divided by N.
             var diff = probs
             vDSP.subtract(probs, Y, result: &diff)
             applySampleWeights(to: &diff, weights: sampleWeights, K: K)
-            var scale = Float(1) / Float(N)
-            vDSP_vsmul(diff, 1, &scale, &diff, 1, vDSP_Length(N * K))
+            var invN = Float(1) / Float(N)
+            vDSP_vsmul(diff, 1, &invN, &diff, 1, vDSP_Length(N * K))
 
-            // gradW = X^T @ diff  →  [D × K]
+            // Output layer grads.
+            // dW2 = hAct^T @ diff  →  [H × K]
             multiply(
-                aT: true, a: X, aRows: N, aCols: D,
+                aT: true, a: hAct, aRows: N, aCols: H,
                 bT: false, b: diff, bRows: N, bCols: K,
-                out: &gradW
+                out: &dW2
             )
-            // L2 regularisation on W.
-            var lambda = hp.l2
-            var two: Float = 2
-            var scaleWtoGrad = lambda * two
-            vDSP_vsma(
-                weights, 1, &scaleWtoGrad, gradW, 1, &gradW, 1,
-                vDSP_Length(D * K)
-            )
-
-            // gradB = column sums of diff
+            // dB2 = column sums of diff.
             for k in 0..<K {
                 var colSum: Float = 0
                 for i in 0..<N { colSum += diff[i * K + k] }
-                gradB[k] = colSum
+                dB2[k] = colSum
             }
 
-            // Update parameters: θ -= lr * grad
-            var negLR = -hp.learningRate
+            // Hidden layer grads.
+            // dH = diff @ W2^T  →  [N × H]
+            multiply(
+                aT: false, a: diff, aRows: N, aCols: K,
+                bT: true, b: weights2, bRows: H, bCols: K,
+                out: &dH
+            )
+            // dPre1 = dH * (pre1 > 0).  ReLU derivative gate.
+            for idx in 0..<(N * H) {
+                dPre1[idx] = pre1[idx] > 0 ? dH[idx] : 0
+            }
+            // dW1 = X^T @ dPre1  →  [D × H]
+            multiply(
+                aT: true, a: X, aRows: N, aCols: D,
+                bT: false, b: dPre1, bRows: N, bCols: H,
+                out: &dW1
+            )
+            // dB1 = column sums of dPre1.
+            for h in 0..<H {
+                var colSum: Float = 0
+                for i in 0..<N { colSum += dPre1[i * H + h] }
+                dB1[h] = colSum
+            }
+
+            // L2 regularisation on both weight matrices.
+            var lambda = hp.l2
+            var two: Float = 2
+            var l2scale = lambda * two
             vDSP_vsma(
-                gradW, 1, &negLR, weights, 1, &weights, 1,
-                vDSP_Length(D * K)
+                weights1, 1, &l2scale, dW1, 1, &dW1, 1,
+                vDSP_Length(D * H)
             )
             vDSP_vsma(
-                gradB, 1, &negLR, bias, 1, &bias, 1,
+                weights2, 1, &l2scale, dW2, 1, &dW2, 1,
+                vDSP_Length(H * K)
+            )
+
+            // Parameter update: θ -= lr * grad.
+            var negLR = -hp.learningRate
+            vDSP_vsma(
+                dW1, 1, &negLR, weights1, 1, &weights1, 1,
+                vDSP_Length(D * H)
+            )
+            vDSP_vsma(
+                dB1, 1, &negLR, bias1, 1, &bias1, 1,
+                vDSP_Length(H)
+            )
+            vDSP_vsma(
+                dW2, 1, &negLR, weights2, 1, &weights2, 1,
+                vDSP_Length(H * K)
+            )
+            vDSP_vsma(
+                dB2, 1, &negLR, bias2, 1, &bias2, 1,
                 vDSP_Length(K)
             )
 
@@ -625,11 +717,13 @@ final class ClassifierEngine: ObservableObject {
         }
 
         // Training accuracy (unweighted).
-        forwardLogits(
-            X: X, W: weights, b: bias,
-            out: &probs, N: N, D: D, K: K
+        forwardMLP(
+            X: X,
+            W1: weights1, b1: bias1,
+            W2: weights2, b2: bias2,
+            pre1: &pre1, hAct: &hAct, probs: &probs,
+            N: N, D: D, H: H, K: K
         )
-        softmaxInPlace(&probs, N: N, K: K)
         var correct = 0
         for i in 0..<N {
             var best: Float = -.greatestFiniteMagnitude
@@ -718,14 +812,16 @@ final class ClassifierEngine: ObservableObject {
             let trainClassSet = Set(trainSamples.map(\.classIndex))
             guard trainClassSet.count >= 2 else { continue }
 
-            let (W, b) = fitLinearClassifier(
+            let fit = fitMLP(
                 samples: trainSamples, sampleWeights: trainWeights
             )
 
             for sample in testSamples {
                 let predicted = Self.argmaxPrediction(
                     vector: sample.features,
-                    weights: W, bias: b, numClasses: K
+                    weights1: fit.W1, bias1: fit.b1,
+                    weights2: fit.W2, bias2: fit.b2,
+                    hiddenDim: fit.H, numClasses: K
                 )
                 confusion[sample.classIndex * K + predicted] += 1
                 if predicted == sample.classIndex { correct += 1 }
@@ -736,15 +832,17 @@ final class ClassifierEngine: ObservableObject {
         return CVResult(accuracy: accuracy, confusion: confusion)
     }
 
-    /// Extracted from runGradientDescent so the CV loop can call it
-    /// without touching `self.weights` / `self.bias`. Same numerics —
-    /// full-batch softmax-CE GD, L2 regularisation, per-sample weights.
-    private func fitLinearClassifier(
+    /// Extracted from runGradientDescent so the CV loop can refit
+    /// without touching the live `self.weights{1,2}`. Same numerics:
+    /// He-init → full-batch softmax-CE GD over the two layers → L2 on
+    /// both weight matrices, per-sample weight scaling on the diff.
+    private func fitMLP(
         samples: [LabeledSample],
         sampleWeights: [Float]
-    ) -> (weights: [Float], bias: [Float]) {
+    ) -> (W1: [Float], b1: [Float], W2: [Float], b2: [Float], H: Int) {
         let N = samples.count
         let D = samples[0].features.count
+        let H = hp.hiddenDim
         let K = numClasses
 
         var X = [Float](repeating: 0, count: N * D)
@@ -755,66 +853,117 @@ final class ClassifierEngine: ObservableObject {
         var Y = [Float](repeating: 0, count: N * K)
         for (i, c) in y.enumerated() { Y[i * K + c] = 1 }
 
-        var W = [Float](repeating: 0, count: D * K)
-        var b = [Float](repeating: 0, count: K)
+        var W1 = Self.initialHeWeights(inDim: D, outDim: H, seed: 1)
+        var b1 = [Float](repeating: 0, count: H)
+        var W2 = Self.initialHeWeights(inDim: H, outDim: K, seed: 2)
+        var b2 = [Float](repeating: 0, count: K)
+
+        var pre1  = [Float](repeating: 0, count: N * H)
+        var hAct  = [Float](repeating: 0, count: N * H)
         var probs = [Float](repeating: 0, count: N * K)
-        var gradW = [Float](repeating: 0, count: D * K)
-        var gradB = [Float](repeating: 0, count: K)
+        var dPre1 = [Float](repeating: 0, count: N * H)
+        var dH    = [Float](repeating: 0, count: N * H)
+        var dW1   = [Float](repeating: 0, count: D * H)
+        var dB1   = [Float](repeating: 0, count: H)
+        var dW2   = [Float](repeating: 0, count: H * K)
+        var dB2   = [Float](repeating: 0, count: K)
 
         for _ in 0..<hp.iterations {
-            forwardLogits(X: X, W: W, b: b, out: &probs, N: N, D: D, K: K)
-            softmaxInPlace(&probs, N: N, K: K)
+            forwardMLP(
+                X: X,
+                W1: W1, b1: b1,
+                W2: W2, b2: b2,
+                pre1: &pre1, hAct: &hAct, probs: &probs,
+                N: N, D: D, H: H, K: K
+            )
 
             var diff = probs
             vDSP.subtract(probs, Y, result: &diff)
             applySampleWeights(to: &diff, weights: sampleWeights, K: K)
-            var scale = Float(1) / Float(N)
-            vDSP_vsmul(diff, 1, &scale, &diff, 1, vDSP_Length(N * K))
+            var invN = Float(1) / Float(N)
+            vDSP_vsmul(diff, 1, &invN, &diff, 1, vDSP_Length(N * K))
 
             multiply(
-                aT: true, a: X, aRows: N, aCols: D,
+                aT: true, a: hAct, aRows: N, aCols: H,
                 bT: false, b: diff, bRows: N, bCols: K,
-                out: &gradW
+                out: &dW2
             )
-            var lambda = hp.l2
-            var two: Float = 2
-            var scaleWtoGrad = lambda * two
-            vDSP_vsma(
-                W, 1, &scaleWtoGrad, gradW, 1, &gradW, 1,
-                vDSP_Length(D * K)
-            )
-
             for k in 0..<K {
                 var colSum: Float = 0
                 for i in 0..<N { colSum += diff[i * K + k] }
-                gradB[k] = colSum
+                dB2[k] = colSum
             }
 
+            multiply(
+                aT: false, a: diff, aRows: N, aCols: K,
+                bT: true, b: W2, bRows: H, bCols: K,
+                out: &dH
+            )
+            for idx in 0..<(N * H) {
+                dPre1[idx] = pre1[idx] > 0 ? dH[idx] : 0
+            }
+            multiply(
+                aT: true, a: X, aRows: N, aCols: D,
+                bT: false, b: dPre1, bRows: N, bCols: H,
+                out: &dW1
+            )
+            for h in 0..<H {
+                var colSum: Float = 0
+                for i in 0..<N { colSum += dPre1[i * H + h] }
+                dB1[h] = colSum
+            }
+
+            var lambda = hp.l2
+            var two: Float = 2
+            var l2scale = lambda * two
+            vDSP_vsma(W1, 1, &l2scale, dW1, 1, &dW1, 1, vDSP_Length(D * H))
+            vDSP_vsma(W2, 1, &l2scale, dW2, 1, &dW2, 1, vDSP_Length(H * K))
+
             var negLR = -hp.learningRate
-            vDSP_vsma(gradW, 1, &negLR, W, 1, &W, 1, vDSP_Length(D * K))
-            vDSP_vsma(gradB, 1, &negLR, b, 1, &b, 1, vDSP_Length(K))
+            vDSP_vsma(dW1, 1, &negLR, W1, 1, &W1, 1, vDSP_Length(D * H))
+            vDSP_vsma(dB1, 1, &negLR, b1, 1, &b1, 1, vDSP_Length(H))
+            vDSP_vsma(dW2, 1, &negLR, W2, 1, &W2, 1, vDSP_Length(H * K))
+            vDSP_vsma(dB2, 1, &negLR, b2, 1, &b2, 1, vDSP_Length(K))
         }
 
-        return (W, b)
+        return (W1, b1, W2, b2, H)
     }
 
-    /// Argmax shortcut — returns the predicted class index (0…K-1).
+    /// Argmax shortcut for one sample — returns the predicted class
+    /// index (0…K-1). Runs the same two-layer forward as `predict`
+    /// but skips the softmax normaliser since argmax is invariant
+    /// under monotonic transforms.
     private static func argmaxPrediction(
         vector: [Float],
-        weights: [Float], bias: [Float], numClasses: Int
+        weights1: [Float], bias1: [Float],
+        weights2: [Float], bias2: [Float],
+        hiddenDim H: Int, numClasses K: Int
     ) -> Int {
         let D = vector.count
-        var logits = bias
+        // pre1 = x @ W1 + b1  →  [H]
+        var pre1 = bias1
         cblas_sgemv(
             CblasRowMajor, CblasTrans,
-            Int32(D), Int32(numClasses),
-            1, weights, Int32(numClasses),
+            Int32(D), Int32(H),
+            1, weights1, Int32(H),
             vector, 1,
+            1, &pre1, 1
+        )
+        // hAct = ReLU(pre1)
+        var hAct = [Float](repeating: 0, count: H)
+        for i in 0..<H { hAct[i] = max(0, pre1[i]) }
+        // logits = hAct @ W2 + b2  →  [K]
+        var logits = bias2
+        cblas_sgemv(
+            CblasRowMajor, CblasTrans,
+            Int32(H), Int32(K),
+            1, weights2, Int32(K),
+            hAct, 1,
             1, &logits, 1
         )
         var best: Float = -.greatestFiniteMagnitude
         var bestIdx = 0
-        for k in 0..<numClasses where logits[k] > best {
+        for k in 0..<K where logits[k] > best {
             best = logits[k]
             bestIdx = k
         }
@@ -870,9 +1019,12 @@ final class ClassifierEngine: ObservableObject {
         // scores and leave the matrix in a "the chip says 53% but
         // the badges match the 28% classifier" mismatch.
         let launchVersion = weightsVersion
-        let weightsSnapshot = weights
-        let biasSnapshot = bias
+        let W1snap = weights1
+        let b1snap = bias1
+        let W2snap = weights2
+        let b2snap = bias2
         let dim = featureDim
+        let H = hiddenDim
         let numClasses = self.numClasses
 
         let next = await Task.detached(priority: .utility) {
@@ -891,9 +1043,9 @@ final class ClassifierEngine: ObservableObject {
                 else { continue }
                 if let prediction = Self.runPrediction(
                     vector: vector,
-                    weights: weightsSnapshot,
-                    bias: biasSnapshot,
-                    numClasses: numClasses
+                    weights1: W1snap, bias1: b1snap,
+                    weights2: W2snap, bias2: b2snap,
+                    hiddenDim: H, numClasses: numClasses
                 ) {
                     next[id] = prediction
                 }
@@ -909,24 +1061,69 @@ final class ClassifierEngine: ObservableObject {
 
     // MARK: - Accelerate helpers
 
-    /// probs ← X @ W + b (row-broadcast bias).
-    private func forwardLogits(
+    /// out ← X @ W + b (row-broadcast bias). Used for both layers
+    /// inside `forwardMLP` — same shape math, just different dims.
+    private func forwardLinear(
         X: [Float], W: [Float], b: [Float],
         out: inout [Float],
-        N: Int, D: Int, K: Int
+        N: Int, inDim: Int, outDim: Int
     ) {
         cblas_sgemm(
             CblasRowMajor, CblasNoTrans, CblasNoTrans,
-            Int32(N), Int32(K), Int32(D),
-            1, X, Int32(D),
-            W, Int32(K),
-            0, &out, Int32(K)
+            Int32(N), Int32(outDim), Int32(inDim),
+            1, X, Int32(inDim),
+            W, Int32(outDim),
+            0, &out, Int32(outDim)
         )
         for i in 0..<N {
-            for k in 0..<K {
-                out[i * K + k] += b[k]
+            for k in 0..<outDim {
+                out[i * outDim + k] += b[k]
             }
         }
+    }
+
+    /// Full forward pass for the two-layer MLP, reusing caller-owned
+    /// buffers so the GD loop doesn't allocate per iteration.
+    private func forwardMLP(
+        X: [Float],
+        W1: [Float], b1: [Float],
+        W2: [Float], b2: [Float],
+        pre1: inout [Float], hAct: inout [Float], probs: inout [Float],
+        N: Int, D: Int, H: Int, K: Int
+    ) {
+        // pre1 = X @ W1 + b1  →  [N × H]
+        forwardLinear(X: X, W: W1, b: b1, out: &pre1, N: N, inDim: D, outDim: H)
+        // hAct = ReLU(pre1)
+        for i in 0..<(N * H) { hAct[i] = max(0, pre1[i]) }
+        // probs = hAct @ W2 + b2  →  [N × K]
+        forwardLinear(X: hAct, W: W2, b: b2, out: &probs, N: N, inDim: H, outDim: K)
+        softmaxInPlace(&probs, N: N, K: K)
+    }
+
+    /// He-uniform init for a Dense layer: ±sqrt(6 / inDim). Feeds a
+    /// ReLU or softmax downstream; values stay in a narrow range so
+    /// the first forward pass doesn't explode at high inDim (our D =
+    /// 782 input dim makes zero-init unusable — the hidden layer
+    /// would dead-ReLU on iteration one).
+    ///
+    /// Deterministic xorshift seeded per layer (1 and 2) so two
+    /// identical train() calls produce identical weights → the CV
+    /// accuracy number is stable across re-trains on the same data.
+    nonisolated private static func initialHeWeights(
+        inDim: Int, outDim: Int, seed: UInt64
+    ) -> [Float] {
+        let limit = sqrtf(6.0 / Float(inDim))
+        var rng: UInt64 = seed &* 0x9E37_79B9_7F4A_7C15
+        var out = [Float](repeating: 0, count: inDim * outDim)
+        for i in 0..<out.count {
+            rng ^= rng << 13
+            rng ^= rng >> 7
+            rng ^= rng << 17
+            // Map 64-bit → [-1, 1] uniform.
+            let uniform01 = Float(rng >> 11) / Float(UInt64(1) << 53)
+            out[i] = (uniform01 * 2 - 1) * limit
+        }
+        return out
     }
 
     /// out ← softmax(out) row-wise with numerical stabilisation.
@@ -999,23 +1196,39 @@ final class ClassifierEngine: ObservableObject {
     /// batch re-score path.
     nonisolated private static func runPrediction(
         vector: [Float],
-        weights: [Float],
-        bias: [Float],
-        numClasses: Int
+        weights1: [Float], bias1: [Float],
+        weights2: [Float], bias2: [Float],
+        hiddenDim H: Int, numClasses: Int
     ) -> Prediction? {
         let D = vector.count
-        guard weights.count == D * numClasses, bias.count == numClasses
+        guard weights1.count == D * H, bias1.count == H,
+              weights2.count == H * numClasses, bias2.count == numClasses
         else { return nil }
 
-        var logits = bias
+        // pre1 = x @ W1 + b1
+        var pre1 = bias1
         cblas_sgemv(
             CblasRowMajor, CblasTrans,
-            Int32(D), Int32(numClasses),
-            1, weights, Int32(numClasses),
+            Int32(D), Int32(H),
+            1, weights1, Int32(H),
             vector, 1,
+            1, &pre1, 1
+        )
+        // hAct = ReLU(pre1)
+        var hAct = [Float](repeating: 0, count: H)
+        for i in 0..<H { hAct[i] = max(0, pre1[i]) }
+
+        // logits = hAct @ W2 + b2
+        var logits = bias2
+        cblas_sgemv(
+            CblasRowMajor, CblasTrans,
+            Int32(H), Int32(numClasses),
+            1, weights2, Int32(numClasses),
+            hAct, 1,
             1, &logits, 1
         )
 
+        // Softmax with row-max subtraction for stability.
         var rowMax: Float = -.greatestFiniteMagnitude
         for k in 0..<numClasses where logits[k] > rowMax { rowMax = logits[k] }
         var sum: Float = 0
@@ -1047,13 +1260,22 @@ final class ClassifierEngine: ObservableObject {
 
     // MARK: - Persistence
 
-    /// Compact little-endian blob header: 4 bytes magic, 1 byte format
-    /// version, 3 bytes reserved, Int32 featureDim, Int32 numClasses —
-    /// then featureDim×numClasses row-major Float32 weights and
-    /// numClasses Float32 biases.
+    /// Compact little-endian blob header — version 2 (MLP):
+    /// 4 bytes magic, 1 byte format version, 3 bytes reserved,
+    /// Int32 featureDim, Int32 hiddenDim, Int32 numClasses, then:
+    ///   - W1  (featureDim × hiddenDim)  Float32 row-major
+    ///   - b1  (hiddenDim)               Float32
+    ///   - W2  (hiddenDim × numClasses)  Float32 row-major
+    ///   - b2  (numClasses)              Float32
+    ///
+    /// Version 1 was the linear logreg layout (no hiddenDim, just
+    /// W[D×K] + b[K]). The v2 decoder rejects v1 blobs so restoring
+    /// an older model after 0.5.0 leaves the classifier untrained —
+    /// the user retrains. Unavoidable because v1 lacked the hidden
+    /// layer entirely; no sensible upgrade path exists.
     private static let weightsMagic: [UInt8] = [0x43, 0x4D, 0x4C, 0x57] // "CMLW"
-    private static let weightsFormatVersion: UInt8 = 1
-    private static let weightsHeaderSize = 16
+    private static let weightsFormatVersion: UInt8 = 2
+    private static let weightsHeaderSize = 20
 
     /// Persist the freshly-trained weights as a new `model_versions`
     /// row. Called from `train()` after `summary` is set so the stored
@@ -1061,14 +1283,17 @@ final class ClassifierEngine: ObservableObject {
     /// the in-memory state is empty (guard against a race where
     /// training failed mid-way).
     private func persistTrainedModel() async {
-        guard !weights.isEmpty, !bias.isEmpty, featureDim > 0,
+        guard !weights1.isEmpty, !bias1.isEmpty,
+              !weights2.isEmpty, !bias2.isEmpty,
+              featureDim > 0, hiddenDim > 0,
               let summary else { return }
 
         let blob = Self.encodeWeights(
             featureDim: featureDim,
+            hiddenDim: hiddenDim,
             numClasses: numClasses,
-            weights: weights,
-            bias: bias
+            weights1: weights1, bias1: bias1,
+            weights2: weights2, bias2: bias2
         )
 
         // Version string: ISO-8601 to second precision + millisecond
@@ -1105,7 +1330,7 @@ final class ClassifierEngine: ObservableObject {
             trainedAt: summary.trainedAt,
             trainingSetSize: summary.sampleCount,
             classCounts: summary.classCounts,
-            classifierType: .logreg,
+            classifierType: .mlp2,
             classifierWeights: blob,
             accuracy5FoldCV: summary.cvAccuracy.map(Double.init),
             notes: notes
@@ -1123,37 +1348,44 @@ final class ClassifierEngine: ObservableObject {
         }
     }
 
-    /// Serialize weights + bias into the `CMLW v1` blob format.
+    /// Serialize the four MLP parameter tensors into the
+    /// `CMLW v2` blob format.
     static func encodeWeights(
-        featureDim: Int, numClasses: Int,
-        weights: [Float], bias: [Float]
+        featureDim: Int, hiddenDim: Int, numClasses: Int,
+        weights1: [Float], bias1: [Float],
+        weights2: [Float], bias2: [Float]
     ) -> Data {
         var data = Data()
-        data.reserveCapacity(
-            weightsHeaderSize + (weights.count + bias.count) * 4
-        )
+        let bodyFloatCount =
+            weights1.count + bias1.count + weights2.count + bias2.count
+        data.reserveCapacity(weightsHeaderSize + bodyFloatCount * 4)
         data.append(contentsOf: weightsMagic)
         data.append(weightsFormatVersion)
         data.append(contentsOf: [0, 0, 0])          // reserved
         var fd = Int32(featureDim).littleEndian
+        var hd = Int32(hiddenDim).littleEndian
         var nc = Int32(numClasses).littleEndian
         withUnsafeBytes(of: &fd) { data.append(contentsOf: $0) }
+        withUnsafeBytes(of: &hd) { data.append(contentsOf: $0) }
         withUnsafeBytes(of: &nc) { data.append(contentsOf: $0) }
-        weights.withUnsafeBufferPointer { buf in
-            data.append(UnsafeBufferPointer(start: buf.baseAddress, count: buf.count))
-        }
-        bias.withUnsafeBufferPointer { buf in
-            data.append(UnsafeBufferPointer(start: buf.baseAddress, count: buf.count))
+        for array in [weights1, bias1, weights2, bias2] {
+            array.withUnsafeBufferPointer { buf in
+                data.append(UnsafeBufferPointer(
+                    start: buf.baseAddress, count: buf.count
+                ))
+            }
         }
         return data
     }
 
-    /// Decode a `CMLW v1` blob. Returns `nil` on magic mismatch, size
-    /// mismatch, or any trailing bytes that don't match the declared
-    /// featureDim × numClasses layout.
+    /// Decode a `CMLW v2` blob. Returns `nil` on magic mismatch,
+    /// version mismatch (v1 logreg is rejected), or any trailing
+    /// bytes that don't match the declared featureDim × hiddenDim ×
+    /// numClasses layout.
     static func decodeWeights(_ data: Data) -> (
-        featureDim: Int, numClasses: Int,
-        weights: [Float], bias: [Float]
+        featureDim: Int, hiddenDim: Int, numClasses: Int,
+        weights1: [Float], bias1: [Float],
+        weights2: [Float], bias2: [Float]
     )? {
         guard data.count >= weightsHeaderSize else { return nil }
         let magic = Array(data.prefix(4))
@@ -1163,31 +1395,45 @@ final class ClassifierEngine: ObservableObject {
         let fd = data.subdata(in: 8..<12).withUnsafeBytes {
             Int32(littleEndian: $0.load(as: Int32.self))
         }
-        let nc = data.subdata(in: 12..<16).withUnsafeBytes {
+        let hd = data.subdata(in: 12..<16).withUnsafeBytes {
+            Int32(littleEndian: $0.load(as: Int32.self))
+        }
+        let nc = data.subdata(in: 16..<20).withUnsafeBytes {
             Int32(littleEndian: $0.load(as: Int32.self))
         }
         let featureDim = Int(fd)
+        let hiddenDim = Int(hd)
         let numClasses = Int(nc)
-        guard featureDim > 0, numClasses > 0 else { return nil }
+        guard featureDim > 0, hiddenDim > 0, numClasses > 0 else {
+            return nil
+        }
 
-        let weightsCount = featureDim * numClasses
-        let biasCount = numClasses
-        let expectedSize = weightsHeaderSize + (weightsCount + biasCount) * 4
+        let w1Count = featureDim * hiddenDim
+        let b1Count = hiddenDim
+        let w2Count = hiddenDim * numClasses
+        let b2Count = numClasses
+        let expectedSize =
+            weightsHeaderSize + (w1Count + b1Count + w2Count + b2Count) * 4
         guard data.count == expectedSize else { return nil }
 
-        let weightsStart = weightsHeaderSize
-        let weightsEnd = weightsStart + weightsCount * 4
-        let biasStart = weightsEnd
-        let biasEnd = biasStart + biasCount * 4
+        func readFloats(from start: Int, count: Int) -> [Float] {
+            data.subdata(in: start..<(start + count * 4))
+                .withUnsafeBytes { raw -> [Float] in
+                    let buf = raw.bindMemory(to: Float.self)
+                    return Array(buf)
+                }
+        }
 
-        let weights = data.subdata(in: weightsStart..<weightsEnd).withUnsafeBytes { raw -> [Float] in
-            let buf = raw.bindMemory(to: Float.self)
-            return Array(buf)
-        }
-        let bias = data.subdata(in: biasStart..<biasEnd).withUnsafeBytes { raw -> [Float] in
-            let buf = raw.bindMemory(to: Float.self)
-            return Array(buf)
-        }
-        return (featureDim, numClasses, weights, bias)
+        var cursor = weightsHeaderSize
+        let weights1 = readFloats(from: cursor, count: w1Count)
+        cursor += w1Count * 4
+        let bias1 = readFloats(from: cursor, count: b1Count)
+        cursor += b1Count * 4
+        let weights2 = readFloats(from: cursor, count: w2Count)
+        cursor += w2Count * 4
+        let bias2 = readFloats(from: cursor, count: b2Count)
+
+        return (featureDim, hiddenDim, numClasses,
+                weights1, bias1, weights2, bias2)
     }
 }

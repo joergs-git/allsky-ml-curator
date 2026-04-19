@@ -4,6 +4,45 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.5.0] — 2026-04-19
+
+Replaces the linear logistic-regression classifier with a
+**two-layer MLP** (Dense → ReLU → Dense → softmax). The linear
+head hit a hard ceiling on Rheine's 14.9k-label dataset — train
+accuracy stuck at ~30 % because the "full clouds at bright day" vs
+"clear at bright day" boundary in Vision FeaturePrint space isn't
+linearly separable, and no amount of class-boost tuning could move
+it. One hidden ReLU layer gives the head enough capacity to learn
+that cut.
+
+### Added
+- **`ClassifierEngine` MLP head.** `weights1` / `bias1` (featureDim
+  × hiddenDim) + `weights2` / `bias2` (hiddenDim × numClasses).
+  He-uniform init for both layers (deterministic xorshift seed per
+  layer so CV accuracy is stable across re-trains on identical
+  data). Full-batch softmax-cross-entropy GD with L2 on both weight
+  matrices. Same Accelerate / vDSP stack as before — no new deps.
+- **`Preferences → Training → Hidden layer units`** slider,
+  16 … 512 step 16, default 128.
+- **Persistence format v2 (`CMLW v2`).** Header grows to 20 bytes
+  to carry `hiddenDim`. Encoder / decoder rewritten accordingly;
+  the classifier-type column flips from `logreg` to `mlp2` on the
+  next persisted row.
+
+### Changed
+- **Old `CMLW v1` model rows are silently rejected on restore** —
+  v1 lacked the hidden layer entirely, so no sensible upgrade path
+  exists. On first launch of 0.5.0 the toolbar chip shows
+  "untrained"; hit ⌘T once to retrain with the MLP. The v1 row
+  stays in `model_versions` for archaeology but isn't loaded.
+- **Section title** in Preferences → Training renamed from
+  "Logistic-regression head" to "MLP head (2 layers)".
+
+### Removed
+- `fitLinearClassifier`. CV now calls `fitMLP` which returns the
+  four parameter tensors + hiddenDim; `argmaxPrediction` likewise
+  runs the two-layer forward.
+
 ## [0.4.2] — 2026-04-19
 
 Replaces the single `clearClassBoost` setting with a **per-class

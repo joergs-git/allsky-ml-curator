@@ -34,6 +34,7 @@ struct PreferencesView: View {
     @State private var trainingLR: Double       = AppSettings.shared.trainingLearningRate
     @State private var trainingIterations: Int  = AppSettings.shared.trainingIterations
     @State private var trainingL2: Double       = AppSettings.shared.trainingL2
+    @State private var mlpHiddenDim: Int        = AppSettings.shared.mlpHiddenDim
     @State private var classBoosts: [Double]    = AppSettings.shared.classWeightBoosts
     @State private var autoThreshold: Double    = AppSettings.shared.autonomousConfidenceThreshold
     @State private var autoMinLabels: Int       = AppSettings.shared.autonomousMinLabels
@@ -264,7 +265,7 @@ struct PreferencesView: View {
     /// outside these ranges rarely help and make debugging harder.
     private var trainingTab: some View {
         Form {
-            Section("Logistic-regression head") {
+            Section("MLP head (2 layers)") {
                 sliderRow(
                     label: "Learning rate",
                     value: $trainingLR,
@@ -288,6 +289,12 @@ struct PreferencesView: View {
                     displayFormat: "%.4f"
                 ) { new in AppSettings.shared.trainingL2 = new }
 
+                integerSliderRow(
+                    label: "Hidden layer units",
+                    value: $mlpHiddenDim,
+                    range: 16...512,
+                    step: 16
+                ) { new in AppSettings.shared.mlpHiddenDim = new }
             }
 
             Section("Per-class boost (× inverse-frequency)") {
@@ -325,6 +332,7 @@ struct PreferencesView: View {
                         trainingLR         = AppSettings.shared.trainingLearningRate
                         trainingIterations = AppSettings.shared.trainingIterations
                         trainingL2         = AppSettings.shared.trainingL2
+                        mlpHiddenDim       = AppSettings.shared.mlpHiddenDim
                         classBoosts        = AppSettings.shared.classWeightBoosts
                         autoThreshold      = AppSettings.shared.autonomousConfidenceThreshold
                         autoMinLabels      = AppSettings.shared.autonomousMinLabels
