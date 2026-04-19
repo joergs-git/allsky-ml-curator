@@ -1,7 +1,7 @@
 # Allsky-ML-Curator — Claude Code Master Document
 
 > Native macOS (Apple Silicon, Metal-accelerated) image curator with on-device ML.
-> **Version:** 0.3.0 — v1 MVP workflow is usable end-to-end (rate → classifier retrains → autonomous streaming auto-rate → inspection view with cloud motion).
+> **Version:** 0.4.0 — rate → retrain → auto-rate → inspect → targeted re-ingest → remove-wrong-ones workflow is end-to-end.
 
 ---
 
@@ -54,7 +54,7 @@ The labeled dataset has three downstream consumers:
 6. **Extend the astro-weather Supabase project — never spin up a new one.** All new tables (`ml_training_samples`, `ml_predictions`, `ml_model_metadata`) live alongside `cloudwatcher_readings` so joins stay trivial.
 7. **Class-5 (clear) gets a 3× boost on top of inverse-frequency weighting.** Rheine nights are dominantly cloudy; without the boost, rare clear samples are statistically invisible. Boost is live-tunable in Preferences → Training.
 8. **Autonomous mode bounds confirmation bias.** Auto-labeled rows have `source='auto'` (provisional, excluded from retrain) or `source='auto_confirmed'` (weighted 0.3×). Autonomous mode is gated behind a minimum human-label count (default 200), live-tunable in Preferences → Training.
-9. **Classical Finder / Excel selection semantics.** Plain arrow keys collapse selection to the cursor and move the anchor. Shift+arrow extends from the anchor (stable). Shift+Up/Down/PageUp/PageDown/Home/End fill full rows; Shift+Left/Right mutates the selection by exactly one tile.
+9. **Classical Finder / Excel selection semantics.** Plain click / plain arrow / Page / Home / End moves **both** cursor and anchor onto the new tile and collapses selection to `{cursor}`. Shift+arrow / Shift+click / Shift+Page extends via a **single linear range** `linearRange(anchorIndex, cursorIndex)` (row-major, inclusive) for horizontal AND vertical — no row-aligned rectangle, no single-cell horizontal special case. Cursor + anchor are tracked as item IDs, not list indices, so list changes preserve the highlighted tile by identity. **Do not flip this model without an explicit user ask** — every previous deviation was a failed UX attempt. Canonical reference: `feedback_stable_selection_anchor.md` in memory.
 10. **Classifier weights blob is version-tagged by featureDim.** `ClassifierEngine.encodeWeights` emits a CMLW v1 header with featureDim; `decodeWeights` returns nil on mismatch; `restoreLatestModel()` falls back to "untrained" silently so growing the aux vector doesn't crash a restore.
 
 ---
@@ -63,21 +63,24 @@ The labeled dataset has three downstream consumers:
 
 | Key(s) | Surface | Action |
 |---|---|---|
-| `0`-`5` | Matrix / Inspection | Apply class rating (0 = unrated) |
-| `R` | Matrix / Inspection | Toggle reflection flag |
-| `T` | Matrix / Inspection | Toggle transitional flag |
+| `0`-`5` | Matrix / List / Inspection | Apply class rating (0 = unrated) |
+| `R` | Matrix / List / Inspection | Toggle reflection flag |
+| `T` | Matrix / List / Inspection | Toggle transitional flag |
 | `Q` | Matrix / Inspection | Arm "quick" (confidence=1) for next digit |
 | `C` | Matrix / Inspection | Arm "certain" (confidence=3) for next digit |
 | `Esc` | Matrix | Cancel armed confidence |
 | `Esc` | Inspection | Close sheet |
-| Arrows | Matrix | Move cursor, collapse selection to a single tile, anchor follows |
-| `Shift` + arrows | Matrix | Extend from anchor; Left/Right = single cell, Up/Down/PageUp/PageDown/Home/End = row-aligned strip |
-| `⌘A` | Matrix | Select all |
-| Enter | Matrix | Open inspection view |
+| Arrows / Page / Home / End | Matrix / List | Move cursor + anchor together, selection = `{cursor}` |
+| Shift + arrows / Page / Home / End / click | Matrix / List | Extend selection via linear range from pinned anchor to new cursor (row-major, inclusive) |
+| `⌘A` | Matrix / List | Select all (anchor ← first, cursor ← last) |
+| `⌘⌫` / `Delete` / `⌦` | Matrix / List | Prompt to remove the current selection (confirmed alert) |
+| Right-click on a tile / row | Matrix / List | Context menu → "Delete N highlighted image(s)" |
+| Enter | Matrix | Open inspection view on cursor tile |
 | Enter / `Esc` | Inspection | Close back to matrix |
 | `⌘⇧A` | Global | Toggle autonomous streaming auto-rate; press again to stop |
 | `⌘T` | Global | Retrain classifier (reads live hyperparameters from AppSettings) |
-| `⌘O` | Global | Open ingest sheet |
+| `⌘O` | Global | Open folder ingest sheet |
+| `⌘⇧I` | Global | Open weather-filtered ingest sheet |
 | `⌘S` | Global | Manual Supabase sync push |
 | `⌘,` | Global | Preferences |
 

@@ -2,7 +2,7 @@
 
 > Native macOS (Apple Silicon, Metal-accelerated) image curator for allsky 360° sky photography, with on-device ML assistance and live learning.
 
-**Version:** 0.3.0 (v1 MVP workflow usable end-to-end)
+**Version:** 0.4.0 (triage + weather-targeted ingest added)
 **Status:** Active development
 
 ## Rating semantics — zenith cone, not full hemisphere
@@ -39,20 +39,35 @@ The resulting labeled dataset feeds three downstream uses:
 
 ## Primary features
 
-- **Navigable matrix view** (4 / 6 / 8 columns) with per-tile prediction overlays, rating stars, and reflection / transitional badges.
-- **Single-image inspection sheet** (Enter on a tile) — large frame + metadata sidebar with ephemeris, sensor data, probability bar chart per class, and a cloud-motion arrow.
-- **Keyboard-first workflow** — `0-5` rate, `R` reflection, `T` transitional, `Q` / `C` confidence prefixes (quick / certain), arrows navigate, Shift+arrows extend selection, `N` night mode, Enter inspects.
-- **Autonomous streaming auto-rate** (`⌘⇧A`) — model labels unrated frames one at a time with live progress and a mid-run stop. Gated behind a configurable minimum of human labels so a freshly seeded model can't feed its own bias.
-- **Live ML loop** — Apple Vision FeaturePrint embedding + BNNS logistic-regression head trained with inverse-frequency + clear-sky boost weighting. Retrain runs in < 200 ms for a typical Rheine dataset; 5-fold CV reports honest per-class precision / recall / F1 alongside a confusion-matrix heatmap.
-- **Classifier persistence** across launches + **real SHA-256 content hash** for every frame lazily upgraded by the embedding pipeline.
-- **Forecast aux features** — meteoblue totalcloud + seeing arcsec are denormalised per-frame and fed into the classifier's aux vector (slots 779-781).
-- **Cloud motion detection** — Vision translational registration between consecutive same-camera frames yields a °/min rate plus compass bearing (when a north offset is calibrated in Preferences → Camera).
-- **Geometric reflection + transitional prefilters** — sun/moon geometry and sidecar AE-stability feed deterministic risk scores used as aux features.
-- **Dynamic zenith crop** — horizon-exclusion slider + per-camera FoV compute a symmetric cone, applied identically to the displayed thumbnail and the embedding so rater and model see the same signal.
-- **Two-camera awareness** — color OSC day + night and monochrome ZWO night-only kept as distinct sources; mono-daytime frames auto-excluded from training.
-- **Night mode** — red-on-black palette for dark-adapted vision at the telescope.
+### Rating + curation
+- **Matrix view** (4 / 6 / 8 columns) with per-tile prediction overlays, rating stars, R / T flag badges, live cursor pulse, and a selection-count chip.
+- **List view toggle** — filename, capture UTC, camera, rating, ingest timestamp, prediction, flags. Scannable table for triage.
+- **Single-image inspection sheet** (`Enter`) with metadata sidebar: ephemeris, sensor, per-class probability bars, cloud-motion arrow.
+- **Single-frame detail panel** on the right sidebar whenever one tile is selected — filename with **Show in Finder**, Copy-to-clipboard button, full ephemeris / weather / sensor / risk block, every value selectable.
+- **Remove images** (`⌘⌫` or right-click → "Delete N highlighted"). Cascades to labels, predictions, thumbnail HEIC, embedding sidecar. Supabase rows kept for re-ingest.
+- **Keyboard-first workflow** — `0-5` rate, `R` reflection, `T` transitional, `Q` / `C` confidence prefixes (quick / certain), arrows navigate, Shift+arrows + Shift+click extend the linear range from cursor, `N` night mode, Enter inspects.
 
-Roadmap: multi-site support + CloudWatcher Solo threshold feedback job (v2.x stretch). FITS ingest and obstruction-mask editor were previously listed here and are now descoped.
+### Ingest
+- **Folder ingest** (`⌘O`) — recursive scan with camera + format picker.
+- **Weather-filtered ingest** (`⌘⇧I`) — pick a sky-temperature range + date window + camera, Supabase fetches the matching `cloudwatcher_readings`, resolves `/volume1/...` → `/Volumes/...`, dedups against the local index, previews count + sample filenames, ingests only the new rows on confirm.
+- **Sandbox bookmark persistence** so SMB mount access survives relaunches.
+
+### ML
+- **Autonomous streaming auto-rate** (`⌘⇧A`) — writes high-confidence `source='auto'` labels one tile at a time, live counter, mid-run stop. Gated behind a configurable minimum of human labels.
+- **Live ML loop** — Apple Vision FeaturePrint embedding + BNNS logistic-regression head trained with inverse-frequency + clear-sky boost weighting. Retrain in < 200 ms on typical Rheine datasets; 5-fold CV with per-class precision / recall / F1 + confusion-matrix heatmap.
+- **Classifier persistence** across launches (train accuracy + duration rehydrated from `model_versions.notes`).
+- **Forecast aux features** — meteoblue totalcloud + seeing + has-forecast flag denormalised per-frame into the 782-dim aux vector.
+- **Cloud motion detection** — Vision translational registration between consecutive same-camera frames yields a °/min rate + compass bearing (when the north offset is calibrated).
+- **Geometric reflection + transitional prefilters** — sun / moon / AE-stability feed deterministic risk scores used as aux features. Daytime reflection risk peaks at ~30° sun altitude (plexiglass specular angle) with a 0.7 floor across the daylight band.
+- **Dynamic zenith crop** — horizon-exclusion slider + per-camera FoV compute a symmetric cone applied identically to thumbnail and embedding.
+- **Two-camera awareness** — color OSC day + night and monochrome ZWO night-only kept as distinct sources; mono-daytime frames auto-excluded.
+
+### Quality-of-life
+- Rebuild-missing-thumbnails repair in Preferences → Advanced.
+- Launch-time database repairs: `/volume1` path rewrite, `cameraSource` ↔ path consistency, back-filled daytime reflection risk.
+- Night mode (red-on-black) for dark-adapted telescope sessions.
+
+Roadmap: multi-site support + CloudWatcher Solo threshold feedback job (v2.x stretch). FITS ingest and obstruction-mask editor were previously listed here and are descoped.
 
 ---
 

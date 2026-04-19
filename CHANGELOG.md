@@ -4,6 +4,116 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.4.0] — 2026-04-19
+
+Triage wave. The MVP workflow now supports *curating the library*
+alongside rating it: remove wrong frames, scan metadata in a list
+view, pull targeted batches by sky-temperature, inspect single
+frames with full metadata side-by-side.
+
+### Added
+- **Remove images** — `Delete` / `⌘⌫` via a proper Edit menu command,
+  plus a per-tile / per-row **context menu** "Delete N highlighted
+  image(s)". Modern `.alert(_:isPresented:)` confirmation. Removal
+  cascades to `labels` + `predictions` (FK) and purges the
+  HEIC + Vision `.fp` sidecars. Supabase rows stay (upsert by
+  `image_path` on re-ingest).
+- **List view toggle** alongside the matrix. Filename, capture UTC,
+  camera, rating stars, ingest timestamp, prediction, R / T flags.
+  Same selection model as the matrix so ⌘⌫ / rating keys work
+  identically.
+- **Weather-filtered ingest** (`⌘⇧I`). Picks a sky-temperature range
+  + date window + camera, queries Supabase `cloudwatcher_readings`,
+  resolves URLs to local paths with `/volume1/` → `/Volumes/`
+  remapping, dedups against the local index, previews count +
+  sample filenames, and ingests only the new rows on confirm.
+- **Single-frame details in the right sidebar.** When exactly one
+  tile is selected the panel shows filename + "reveal in Finder"
+  button + Copy-to-clipboard button, captured / added timestamps,
+  camera, sun + moon ephemeris, weather context (cloudwatcher sky
+  temp, meteoblue cloud % / seeing), sensor sidecar (exposure /
+  gain / sensor temp), reflection + transitional risk. Every value
+  row is `.textSelection(.enabled)` so individual fields can be
+  copied.
+- **Selection count chip** ("N of M selected") in the bottom legend
+  bar so the curator always knows how many tiles a rating keystroke
+  will hit.
+- **Rebuild missing thumbnails** action in Preferences → Advanced:
+  walks every image row, checks whether the HEIC exists under the
+  current camera geometry + crop cacheKey, regenerates the missing
+  ones in the throttled pipeline. Fixes the "chunk gap" pattern
+  that appears when fisheye / crop settings change without
+  purging the whole cache.
+- **Sandbox bookmark persistence**. NSOpenPanel URLs are now
+  archived with `.withSecurityScope` bookmarkData in UserDefaults
+  and re-activated on every `applicationDidFinishLaunching`, so
+  `/Volumes/AllSky-Rheine/...` stays readable across app
+  relaunches. Preferences → Advanced gains a "Grant folder
+  access" button for re-authorising without going through ingest.
+- **Launch-time database repairs** (all idempotent, no-op on a
+  clean DB):
+  - `/volume1/...` → `/Volumes/...` path prefix rewrite (fixes
+    rows from the first weather-ingest run before the remap
+    landed).
+  - `cameraSource` ↔ path-pattern consistency for the Rheine
+    rig (`/zwo/` = color, rest = mono).
+  - Back-fill `reflectionRiskScore` for daytime color-camera rows
+    that were scored 0 under the pre-fix "handled elsewhere"
+    daylight formula.
+
+### Changed
+- **Selection model overhaul (final).** Classical Finder / Excel:
+  plain arrow / page / home / end moves both cursor and anchor
+  onto the new tile, selection collapses to `{cursor}`, so the
+  next Shift action always extends from wherever the cursor
+  currently sits — no pre-click required. Shift+arrow /
+  Shift+click / Shift+page / Shift+home / Shift+end extends with
+  the single linear range `linearRange(anchorIndex, cursorIndex)`
+  (row-major, inclusive). Same rule for horizontal and vertical;
+  the row-aligned-rectangle and single-cell-shift-horizontal
+  special cases are gone. Cursor + anchor are tracked as item
+  IDs so list changes preserve the highlighted tile by identity.
+- **Reflection-risk formula** for day-capable cameras: peaks at
+  sun ≈ 30° altitude (strongest specular angle off the plexiglass
+  dome), floor of 0.7 across the daylight band, linear ramp
+  through twilight to 0 at −12° sun altitude.
+- **Meteoblue `hasForecast` gating.** The aux-feature flag now
+  requires all three meteoblue fields (hour_id + totalcloud +
+  seeing) to be present, not just hour_id, so rows upgraded from
+  v4 (NULL values after the v5 migration) no longer inject a
+  fabricated clear-sky / perfect-seeing signal into training.
+- **Classifier chip** shows 5-fold CV accuracy when available,
+  falling back to train accuracy only for datasets too small for
+  CV. Restored classifiers rehydrate `trainAccuracy` +
+  `durationSeconds` from a JSON `notes` column so the side panel
+  stops showing `0%` after relaunch.
+- **Persisted model version IDs** include a millisecond counter so
+  two consecutive trains in the same second don't collide on the
+  `model_versions` primary key (previously the collision was
+  silently swallowed and a restore could load the stale snapshot).
+
+### Fixed
+- **Ingest cancellation no longer drops a staged batch.** A `defer`
+  in `ingestFolder` / `ingestFiles` guarantees the final
+  `pendingBatch` reaches the DB on every exit path.
+- **`flushPendingBatch` keeps the batch intact on error** so a
+  retry path can pick it up instead of losing up to 499
+  transiently-failed rows.
+- **Auto-rate never overwrites a human rating.** `setAutoRating`
+  refuses to demote a `source == .human` label even if the stream
+  had queued a write for that frame earlier.
+- **Detached prediction recompute race.** `recomputeAllPredictions`
+  snapshots a monotonic `weightsVersion` before going detached and
+  drops its result if a newer train / restore replaced the weights
+  in the meantime — stale predictions can't overwrite newer ones.
+- **Shared pipeline task cancellation.** `EmbeddingPipeline.generate`
+  and `ThumbnailCache.generate` no longer call `task.cancel()` on
+  the shared inflight task. A single joiner scrolling off can't
+  rob every other joiner (warmer, auto-rater, other tiles) of
+  the result.
+- **Confidence prefix Q / C on InspectionView** now ignores the
+  keystroke when `.command` is held, so `⌘Q` / `⌘C` pass through.
+
 ## [0.3.0] — 2026-04-18
 
 The MVP-usable wave. A curator can now rate, retrain, auto-rate,
