@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Right-hand status sidebar, permanently docked to the main window.
@@ -31,6 +32,10 @@ struct InfoSidePanel: View {
                 embeddingSection
                 Divider()
                 syncSection
+                if let focused = focusedFrame {
+                    Divider()
+                    frameDetailsSection(for: focused)
+                }
                 if !analysisTips.isEmpty {
                     Divider()
                     analysisHelperSection
@@ -42,6 +47,19 @@ struct InfoSidePanel: View {
         }
         .frame(maxHeight: .infinity)
         .background(AppColors.bgToolbar(nightMode))
+    }
+
+    /// The single image whose details should be surfaced at the
+    /// bottom of the panel. Shown only when exactly one tile is
+    /// selected — a multi-tile selection wouldn't have one set of
+    /// coherent values to display, and "rate X tiles" mode tends to
+    /// be batch-oriented anyway.
+    private var focusedFrame: ImageLibrary.ImageListItem? {
+        guard selectedIds.count == 1,
+              let id = selectedIds.first,
+              let item = items.first(where: { $0.id == id })
+        else { return nil }
+        return item
     }
 
     // MARK: - Header
@@ -402,6 +420,131 @@ struct InfoSidePanel: View {
             }
         }
     }
+
+    // MARK: - Frame details (single-selection)
+
+    /// Per-frame metadata block. Shown when the user has exactly
+    /// one tile selected so the curator can check filename, capture
+    /// time, and weather context without opening the full inspection
+    /// view. Everything shown here is already on the ImageRecord —
+    /// no async lookups — so the panel stays responsive during fast
+    /// arrow-key navigation.
+    private func frameDetailsSection(
+        for item: ImageLibrary.ImageListItem
+    ) -> some View {
+        let image = item.image
+        let filename = (image.filePath as NSString).lastPathComponent
+
+        return VStack(alignment: .leading, spacing: 10) {
+            sectionHeader("Frame", icon: "photo.on.rectangle")
+
+            // Filename + reveal-in-Finder button on one row.
+            HStack(spacing: 8) {
+                Text(filename)
+                    .font(.system(size: 12, design: .monospaced))
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+                    .foregroundStyle(AppColors.fg(nightMode))
+                    .textSelection(.enabled)
+                Spacer()
+                Button {
+                    revealInFinder(image.filePath)
+                } label: {
+                    Image(systemName: "folder")
+                        .font(.caption)
+                }
+                .buttonStyle(.borderless)
+                .help("Show in Finder")
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                detailRow("Captured",
+                    Self.frameDetailDateFormatter.string(from: image.captureUtc))
+                detailRow("Added",
+                    Self.frameDetailDateFormatter.string(from: image.createdAt))
+                detailRow("Camera",
+                    image.cameraSource.rawValue
+                        .replacingOccurrences(of: "_", with: " "))
+                detailRow("Time of day",
+                    image.timeOfDay.rawValue
+                        .replacingOccurrences(of: "_", with: " "))
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                detailRow("Sun alt",
+                    String(format: "%.1f°", image.sunAltDeg))
+                detailRow("Sun az",
+                    String(format: "%.1f°", image.sunAzDeg))
+                detailRow("Moon alt",
+                    String(format: "%.1f°", image.moonAltDeg))
+                detailRow("Moon phase",
+                    String(format: "%.0f %%", image.moonPhase * 100))
+            }
+
+            // Weather context — hide the whole block if no value is
+            // populated rather than showing three rows of "—".
+            if image.cloudwatcherSkyTempC != nil
+                || image.meteoblueTotalCloud != nil
+                || image.meteoblueSeeingArcsec != nil {
+                VStack(alignment: .leading, spacing: 3) {
+                    if let sky = image.cloudwatcherSkyTempC {
+                        detailRow("Sky temp",
+                            String(format: "%.1f °C", sky))
+                    }
+                    if let cloud = image.meteoblueTotalCloud {
+                        detailRow("Cloud forecast",
+                            String(format: "%.0f %%", cloud))
+                    }
+                    if let seeing = image.meteoblueSeeingArcsec {
+                        detailRow("Seeing forecast",
+                            String(format: "%.1f″", seeing))
+                    }
+                }
+            }
+
+            // Sensor sidecar values — only rendered when any are set.
+            let hasSensor = image.exposureSec != nil
+                || image.gain != nil
+                || image.sensorTempC != nil
+            if hasSensor {
+                VStack(alignment: .leading, spacing: 3) {
+                    if let exp = image.exposureSec {
+                        detailRow("Exposure",
+                            String(format: "%.2f s", exp))
+                    }
+                    if let gain = image.gain {
+                        detailRow("Gain", String(format: "%.0f", gain))
+                    }
+                    if let temp = image.sensorTempC {
+                        detailRow("Sensor temp",
+                            String(format: "%.1f °C", temp))
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                detailRow("Reflection risk",
+                    String(format: "%.2f", image.reflectionRiskScore))
+                detailRow("Transitional risk",
+                    String(format: "%.2f", image.transitionalRiskScore))
+            }
+        }
+    }
+
+    /// Reveal the source JPG in Finder. Uses the sandbox-scoped
+    /// bookmark that BookmarkStore re-activates on launch so the
+    /// call is safe on SMB mount paths.
+    private func revealInFinder(_ path: String) {
+        let url = URL(fileURLWithPath: path)
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    private static let frameDetailDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        f.timeZone = TimeZone(identifier: "UTC")
+        return f
+    }()
 
     // MARK: - Analysis helper
 

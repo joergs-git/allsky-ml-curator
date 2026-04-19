@@ -198,6 +198,18 @@ final class Database {
             }
         }
 
+        // Denormalised cloudwatcher sky temperature so the frame
+        // details side-panel can show live context without a
+        // per-frame Supabase lookup.
+        migrator.registerMigration("v6_add_cloudwatcher_sky_temp") { db in
+            let existing = Set((try? db.columns(in: "images"))?.map(\.name) ?? [])
+            try db.alter(table: "images") { t in
+                if !existing.contains("cloudwatcherSkyTempC") {
+                    t.add(column: "cloudwatcherSkyTempC", .double)
+                }
+            }
+        }
+
         return migrator
     }
 }

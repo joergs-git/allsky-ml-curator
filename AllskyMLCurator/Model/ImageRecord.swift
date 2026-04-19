@@ -42,6 +42,12 @@ struct ImageRecord: Codable, Identifiable, Equatable, Sendable {
     /// Rarely drops below 1″ or exceeds 6″ for northern-European sites.
     var meteoblueSeeingArcsec: Double?
 
+    /// Denormalised sky temperature from the matched cloudwatcher
+    /// reading (°C). Below ~−13 is clearly clear, −13 … −11 cloudy,
+    /// above −11 overcast. Stored on the image row so the side-panel
+    /// can show live context without a separate Supabase lookup.
+    var cloudwatcherSkyTempC: Double?
+
     // MARK: - Ephemeris (sun / moon, body-agnostic)
 
     var sunAltDeg: Double
@@ -120,6 +126,7 @@ extension ImageRecord: FetchableRecord, MutablePersistableRecord {
         static let meteoblueHourId       = Column(CodingKeys.meteoblueHourId)
         static let meteoblueTotalCloud   = Column(CodingKeys.meteoblueTotalCloud)
         static let meteoblueSeeingArcsec = Column(CodingKeys.meteoblueSeeingArcsec)
+        static let cloudwatcherSkyTempC  = Column(CodingKeys.cloudwatcherSkyTempC)
         static let sunAltDeg             = Column(CodingKeys.sunAltDeg)
         static let sunAzDeg              = Column(CodingKeys.sunAzDeg)
         static let moonAltDeg            = Column(CodingKeys.moonAltDeg)
