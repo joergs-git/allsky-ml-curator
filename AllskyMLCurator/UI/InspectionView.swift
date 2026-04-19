@@ -374,11 +374,22 @@ struct InspectionView: View {
             }
             return .handled
         case "q", "Q":
+            // Pass ⌘Q (app quit), ⌘⌥Q etc. through — the confidence
+            // prefix is for plain keys only; swallowing every q
+            // would block every Command-modified shortcut that
+            // happens to have q in it.
+            guard !press.modifiers.contains(.command) else {
+                return .ignored
+            }
             withAnimation(.easeInOut(duration: 0.12)) {
                 pendingConfidence = (pendingConfidence == 1) ? nil : 1
             }
             return .handled
         case "c", "C":
+            // Pass ⌘C (copy) through for the same reason.
+            guard !press.modifiers.contains(.command) else {
+                return .ignored
+            }
             withAnimation(.easeInOut(duration: 0.12)) {
                 pendingConfidence = (pendingConfidence == 3) ? nil : 3
             }

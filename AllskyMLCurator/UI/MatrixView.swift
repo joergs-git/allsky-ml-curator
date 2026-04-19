@@ -170,7 +170,25 @@ struct MatrixView: View {
                     secondaryButton: .cancel()
                 )
             }
+            // ⌘⌫ dispatched through a hidden button — macOS routes
+            // Command-key combos via the responder / menu chain
+            // before `.onKeyPress` sees them, so a plain switch on
+            // press.key never fires for ⌘⌫. A zero-opacity button
+            // with the correct keyboardShortcut picks it up
+            // globally for the focused window (same trick used for
+            // ⌘⇧I in ContentView). Bare Delete / ⌦ keep working
+            // through `.onKeyPress` for users who prefer them.
+            .background(
+                Button("") { requestDeleteSelection() }
+                    .keyboardShortcut(.delete, modifiers: [.command])
+                    .opacity(0)
+            )
         }
+    }
+
+    private func requestDeleteSelection() {
+        guard !selectedIds.isEmpty else { return }
+        deletePrompt = DeletePrompt(ids: Array(selectedIds))
     }
 
     // MARK: - Deletion
@@ -504,13 +522,31 @@ struct MatrixView: View {
         let newDistance = abs(newIndex - anchorIdx)
 
         if newDistance > oldDistance {
-            // Moving farther from the anchor — extend onto the new cell.
+            // Moving farther from the anchor — extend onto the new
+            // cell. Set.insert is a no-op when the cell was already
+            // in a row-aligned block, which is the exact case the
+            // next shrink-step guard handles below.
             selectedIds.insert(items[newIndex].id)
         } else if newDistance < oldDistance {
-            // Moving back toward the anchor — release the cell we're leaving.
-            selectedIds.remove(items[oldIndex].id)
+            // Moving back toward the anchor. Only remove the cell
+            // we're leaving (oldIndex) when it's at the *far edge*
+            // of the current selection — i.e., no cell further from
+            // the anchor is also selected. Otherwise the cursor was
+            // navigating inside an existing row-aligned block
+            // (Shift+Down built a multi-row rectangle, now
+            // Shift+Left steps back inside it), and removing
+            // oldIndex would silently drill holes in the block.
+            let direction = oldIndex >= anchorIdx ? 1 : -1
+            let beyondIdx = oldIndex + direction
+            let beyondIsSelected = items.indices.contains(beyondIdx)
+                && selectedIds.contains(items[beyondIdx].id)
+            if !beyondIsSelected {
+                selectedIds.remove(items[oldIndex].id)
+            }
         } else {
-            // Crossed the anchor with a single step.
+            // Distances equal can only happen with a single step
+            // across the anchor (oldIndex and newIndex on opposite
+            // sides). Swap the two.
             selectedIds.remove(items[oldIndex].id)
             selectedIds.insert(items[newIndex].id)
         }

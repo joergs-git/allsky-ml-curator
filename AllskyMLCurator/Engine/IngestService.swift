@@ -94,6 +94,21 @@ final class IngestService: ObservableObject {
             var pendingBatch: [ImageRecord] = []
             pendingBatch.reserveCapacity(Self.insertBatchSize)
 
+            // Cancellation + error paths both need to flush any
+            // already-processed records to the DB so the user
+            // doesn't silently lose the first ~499 frames of a
+            // batch when they hit Cancel mid-run. The bookkeeping
+            // happens in the defer so every exit path is covered.
+            defer {
+                if let dbWriter, !pendingBatch.isEmpty {
+                    let doomed = pendingBatch
+                    Task { @MainActor in
+                        var batch = doomed
+                        await self.flushPendingBatch(&batch, into: dbWriter)
+                    }
+                }
+            }
+
             for file in files {
                 try token.checkCancelled()
                 if let record = await processFile(
@@ -382,8 +397,12 @@ final class IngestService: ObservableObject {
         into db: DatabaseWriter
     ) async {
         guard !batch.isEmpty else { return }
+        // Keep the working copy until the write transaction
+        // succeeds — a GRDB error used to wipe `batch.removeAll`
+        // early and orphan up to 500 staged frames. Only clear on
+        // successful commit so a retry or a later `defer`-driven
+        // flush can still pick them up.
         let records = batch
-        batch.removeAll(keepingCapacity: true)
         do {
             let newInsertCount = try await db.write { db -> Int in
                 var insertedInBatch = 0
@@ -400,8 +419,11 @@ final class IngestService: ObservableObject {
                 return insertedInBatch
             }
             inserted += newInsertCount
+            batch.removeAll(keepingCapacity: true)
         } catch {
             lastError = "Batch insert failed (\(records.count) records): \(error)"
+            // Leave `batch` intact so the caller's retry path — or
+            // the final flush in the `defer` — can try again.
         }
     }
 

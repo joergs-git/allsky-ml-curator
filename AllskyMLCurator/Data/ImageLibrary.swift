@@ -239,10 +239,12 @@ final class ImageLibrary: ObservableObject {
 
     /// Apply a provisional machine rating (`source='auto'`) to every
     /// image id — used by the autonomous rater. The previous active
-    /// label, if any, is demoted to `isCurrent=false`; a future manual
-    /// rating from the curator will override. Never used to overwrite
-    /// an existing human rating — the caller is expected to filter to
-    /// unrated frames before calling.
+    /// label is demoted to `isCurrent=false` **only when it's not a
+    /// human rating** — otherwise the auto path would silently
+    /// overwrite work the curator applied mid-stream (e.g., they
+    /// corrected a tile while the streamer was still queuing up
+    /// writes to it). Human labels, once attached, can only be
+    /// replaced by further human input.
     func setAutoRating(
         _ ratingClass: RatingClass,
         forImageIds imageIds: [Int64]
@@ -253,6 +255,12 @@ final class ImageLibrary: ObservableObject {
                     .filter(Column("imageId") == imageId)
                     .filter(Column("isCurrent") == true)
                     .fetchOne(db)
+                // Guard: leave any current human label in place and
+                // skip the insert. The auto stream is advisory —
+                // never authoritative over a human decision.
+                if let prev = previous, prev.source == .human {
+                    continue
+                }
                 if var prev = previous {
                     prev.isCurrent = false
                     try prev.update(db)

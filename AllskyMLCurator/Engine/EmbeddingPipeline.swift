@@ -118,34 +118,33 @@ final class EmbeddingPipeline: @unchecked Sendable {
         if let hit = cached(for: imagePath) { return hit }
 
         let key = cacheKey(for: imagePath)
-        if let existing = inflight.withLock({ $0[key] }) {
-            // Join an in-flight extraction instead of starting a duplicate.
-            // Cancellation of *this* call is propagated to the shared task
-            // only when every joiner cancels — otherwise a scroll-off
-            // shouldn't tear down work another caller still wants.
-            return await existing.value
-        }
 
-        // `Task.detached` keeps the Vision + CGImageSource work off
-        // the MainActor that `.task(...)` inherits. Cancellation is
-        // still threaded through via `withTaskCancellationHandler` +
-        // explicit `task.cancel()`, so scroll-off tears down pending
-        // extractions without needing the task to be structurally
-        // attached.
-        let task = Task.detached(priority: .utility) { [self] () -> Embedding? in
-            defer { inflight.withLock { $0[key] = nil } }
-            guard !Task.isCancelled else { return nil }
-            await extractionSemaphore.acquire()
-            defer { Task { await extractionSemaphore.release() } }
-            guard !Task.isCancelled else { return nil }
-            return await self.extract(imagePath: imagePath, cameraType: cameraType)
+        // Join an in-flight extraction instead of starting a
+        // duplicate — dedup across the warmer, autonomous rater,
+        // and tile-level triggers. Critically, we no longer call
+        // `task.cancel()` via withTaskCancellationHandler: the
+        // shared task is a resource used by multiple callers, and
+        // cancelling it because *this* joiner went away would
+        // silently abort work another caller is still awaiting.
+        // `await task.value` is not cancellation-propagating by
+        // default for non-throwing Tasks, which is the right
+        // behaviour here — the detached worker runs to completion
+        // and every joiner receives the same Embedding?.
+        let task: Task<Embedding?, Never>
+        if let existing = inflight.withLock({ $0[key] }) {
+            task = existing
+        } else {
+            // `Task.detached` keeps the Vision + CGImageSource work
+            // off the MainActor that `.task(...)` inherits.
+            task = Task.detached(priority: .utility) { [self] () -> Embedding? in
+                defer { inflight.withLock { $0[key] = nil } }
+                await extractionSemaphore.acquire()
+                defer { Task { await extractionSemaphore.release() } }
+                return await self.extract(imagePath: imagePath, cameraType: cameraType)
+            }
+            inflight.withLock { $0[key] = task }
         }
-        inflight.withLock { $0[key] = task }
-        return await withTaskCancellationHandler {
-            await task.value
-        } onCancel: {
-            task.cancel()
-        }
+        return await task.value
     }
 
     // MARK: - Extraction

@@ -151,6 +151,13 @@ final class ClassifierEngine: ObservableObject {
     private var weights: [Float] = []
     private var bias: [Float] = []
     private var featureDim: Int = 0
+    /// Monotonically increases every time `weights` is replaced
+    /// (train(), restoreLatestModel(), clear()). `recomputeAllPredictions`
+    /// reads the current value before spawning its detached task and
+    /// ignores the result if the version advanced while the task ran
+    /// — otherwise an older recompute can finish after a newer one
+    /// and overwrite the newer model's predictions with stale scores.
+    private var weightsVersion: Int = 0
 
     // MARK: - Public API
 
@@ -249,6 +256,7 @@ final class ClassifierEngine: ObservableObject {
                 },
                 durationSeconds: duration
             )
+            weightsVersion &+= 1
 
             await recomputeAllPredictions()
             await persistTrainedModel()
@@ -279,17 +287,31 @@ final class ClassifierEngine: ObservableObject {
         weights = decoded.weights
         bias = decoded.bias
         featureDim = decoded.featureDim
+        weightsVersion &+= 1
 
+        // Unpack the trainAccuracy + duration stashed in `notes`
+        // as JSON by persistTrainedModel. Older rows (notes=nil)
+        // still decode — trainAccuracy stays 0 only for them, and
+        // the UI already prefers CV as the headline metric.
+        var restoredTrainAccuracy: Float = 0
+        var restoredDuration: Double = 0
+        if let notes = row.notes,
+           let data = notes.data(using: .utf8),
+           let dict = try? JSONSerialization.jsonObject(with: data)
+             as? [String: Double] {
+            restoredTrainAccuracy = Float(dict["trainAccuracy"] ?? 0)
+            restoredDuration = dict["durationSeconds"] ?? 0
+        }
         summary = TrainingSummary(
             trainedAt: row.trainedAt,
             sampleCount: row.trainingSetSize,
             classCounts: row.classCounts,
             finalLoss: 0,           // not persisted
-            trainAccuracy: 0,       // not persisted
+            trainAccuracy: restoredTrainAccuracy,
             cvAccuracy: row.accuracy5FoldCV.map(Float.init),
             confusionMatrix: nil,   // not persisted
             classMetrics: nil,      // not persisted
-            durationSeconds: 0
+            durationSeconds: restoredDuration
         )
 
         await recomputeAllPredictions()
@@ -327,6 +349,7 @@ final class ClassifierEngine: ObservableObject {
         featureDim = 0
         summary = nil
         predictions = [:]
+        weightsVersion &+= 1
     }
 
     /// Recompute the coverage snapshot without actually training.
@@ -825,10 +848,15 @@ final class ClassifierEngine: ObservableObject {
     /// Re-score every image the library currently holds after a
     /// training run. Called automatically from `train()`.
     private func recomputeAllPredictions() async {
-        // Snapshot the current weights so the detached work doesn't
-        // need MainActor access for them. `self` stays isolated; the
-        // per-image sidecar decode + sgemv happen on the cooperative
-        // pool.
+        // Snapshot weights + version so the detached work doesn't
+        // need MainActor access for them. If weightsVersion moves on
+        // during the detached run (a fresh train() overlapped an
+        // older restoreLatestModel() recompute, for instance), we
+        // throw the result away — otherwise the older recompute
+        // could overwrite the newer model's predictions with stale
+        // scores and leave the matrix in a "the chip says 53% but
+        // the badges match the 28% classifier" mismatch.
+        let launchVersion = weightsVersion
         let weightsSnapshot = weights
         let biasSnapshot = bias
         let dim = featureDim
@@ -860,6 +888,9 @@ final class ClassifierEngine: ObservableObject {
             return next
         }.value
 
+        // Only commit if no newer train / restore / clear replaced
+        // the weights while this task was running.
+        guard launchVersion == weightsVersion else { return }
         predictions = next
     }
 
@@ -1027,12 +1058,34 @@ final class ClassifierEngine: ObservableObject {
             bias: bias
         )
 
-        // Version string: ISO-8601 without separators + sample count —
-        // chronologically sortable, unique across rapid consecutive
-        // trains, and self-describing when scanning the table.
+        // Version string: ISO-8601 to second precision + millisecond
+        // counter + sample count. The millisecond tail protects
+        // against two trains in the same second colliding on the
+        // UNIQUE primary key and silently dropping the newer row
+        // (PersistableRecord.insert throws, the catch block below
+        // swallows it, restore later loads the stale snapshot).
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
-        let versionString = "v\(formatter.string(from: summary.trainedAt))-\(summary.sampleCount)"
+        let millis = Int((summary.trainedAt.timeIntervalSince1970 * 1000)
+                         .truncatingRemainder(dividingBy: 1000))
+        let versionString = String(
+            format: "v%@-%03d-%d",
+            formatter.string(from: summary.trainedAt),
+            millis,
+            summary.sampleCount
+        )
+
+        // Stash trainAccuracy + duration in the `notes` JSON so the
+        // restore path can rehydrate a usable summary without
+        // needing a schema migration. Keeping it optional so older
+        // rows (notes=nil) still decode cleanly.
+        let extras: [String: Double] = [
+            "trainAccuracy": Double(summary.trainAccuracy),
+            "durationSeconds": summary.durationSeconds
+        ]
+        let notes = (try? JSONSerialization.data(
+            withJSONObject: extras, options: []
+        )).flatMap { String(data: $0, encoding: .utf8) }
 
         let record = ModelVersionRecord(
             version: versionString,
@@ -1042,7 +1095,7 @@ final class ClassifierEngine: ObservableObject {
             classifierType: .logreg,
             classifierWeights: blob,
             accuracy5FoldCV: summary.cvAccuracy.map(Double.init),
-            notes: nil
+            notes: notes
         )
 
         do {

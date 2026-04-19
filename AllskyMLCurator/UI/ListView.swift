@@ -102,7 +102,17 @@ struct ListView: View {
                     secondaryButton: .cancel()
                 )
             }
+            .background(
+                Button("") { requestDeleteSelection() }
+                    .keyboardShortcut(.delete, modifiers: [.command])
+                    .opacity(0)
+            )
         }
+    }
+
+    private func requestDeleteSelection() {
+        guard !selectedIds.isEmpty else { return }
+        deletePrompt = DeletePrompt(ids: Array(selectedIds))
     }
 
     // MARK: - Header

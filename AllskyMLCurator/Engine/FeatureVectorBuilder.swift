@@ -59,18 +59,27 @@ enum FeatureVectorBuilder {
         let moonAzRad = image.moonAzDeg * .pi / 180.0
         let camOneHot = cameraOneHot(for: image.cameraSource)
 
-        // Forecast aux. When the frame has no matching meteoblue hour
-        // we zero the flag + values; the classifier learns to discount
-        // the forecast channel in that case. The normalisation bounds
-        // match what `meteoblue_hourly` actually emits for Rheine —
-        // totalcloud is already 0…100, seeing rarely leaves 1″–6″.
-        let hasForecast: Float = image.meteoblueHourId == nil ? 0 : 1
-        let cloudNorm: Float = Float(
-            max(0.0, min(1.0, (image.meteoblueTotalCloud ?? 0.0) / 100.0))
-        )
-        let seeingNorm: Float = Float(
-            max(0.0, min(1.0, ((image.meteoblueSeeingArcsec ?? 1.0) - 1.0) / 5.0))
-        )
+        // Forecast aux. We only flag "has forecast" when every
+        // denormalised value (hour_id + totalcloud + seeing) is
+        // actually populated on this row. The v5 migration added
+        // the `meteoblueTotalCloud` + `meteoblueSeeingArcsec`
+        // columns without back-filling historical rows, so images
+        // ingested before v5 landed have `meteoblueHourId` set but
+        // the other two still NULL. If we let hasForecast fire on
+        // hour_id alone, those rows would inject a fabricated
+        // "clear sky + perfect seeing" signal into training — the
+        // worst of both worlds. Require all three.
+        let hasAllForecastFields =
+            image.meteoblueHourId != nil
+            && image.meteoblueTotalCloud != nil
+            && image.meteoblueSeeingArcsec != nil
+        let hasForecast: Float = hasAllForecastFields ? 1 : 0
+        let cloudNorm: Float = hasAllForecastFields
+            ? Float(max(0.0, min(1.0, (image.meteoblueTotalCloud ?? 0.0) / 100.0)))
+            : 0
+        let seeingNorm: Float = hasAllForecastFields
+            ? Float(max(0.0, min(1.0, ((image.meteoblueSeeingArcsec ?? 1.0) - 1.0) / 5.0)))
+            : 0
 
         return [
             Float(image.sunAltDeg / 90.0),

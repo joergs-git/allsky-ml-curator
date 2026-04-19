@@ -87,35 +87,28 @@ final class ThumbnailCache: @unchecked Sendable {
         if let hit = cached(for: imagePath, cameraType: cameraType) { return hit }
 
         let key = cacheKey(for: imagePath, cameraType: cameraType)
-        if let existing = inflight.withLock({ $0[key] }) {
-            return await existing.value
-        }
 
-        // `Task.detached` is load-bearing here: the matrix tile's
-        // `.task` runs on the MainActor, and a plain `Task { ... }`
-        // inherits that isolation — which means CGImageSource decode,
-        // CGContext.draw, and the HEIC encode would all block the
-        // main thread. Detached pushes the work onto the cooperative
-        // pool. Cancellation is propagated manually via
-        // `withTaskCancellationHandler` + explicit `task.cancel()` so
-        // the scroll-off wins the orphan-task fix from PR #38 still
-        // apply.
-        let task = Task.detached(priority: .utility) { [self] () -> NSImage? in
-            defer { inflight.withLock { $0[key] = nil } }
-            guard !Task.isCancelled else { return nil }
-            await generationSemaphore.acquire()
-            defer { Task { await generationSemaphore.release() } }
-            guard !Task.isCancelled else { return nil }
-            return await generateOnWorker(
-                for: imagePath, cameraType: cameraType
-            )
+        // Same dedup-without-cancel rule as EmbeddingPipeline:
+        // multiple tiles on the same key share a single detached
+        // worker, and `task.cancel()` from one joiner would rob
+        // every other joiner of the result. Let the worker finish;
+        // `await task.value` is naturally non-propagating for
+        // non-throwing Tasks.
+        let task: Task<NSImage?, Never>
+        if let existing = inflight.withLock({ $0[key] }) {
+            task = existing
+        } else {
+            task = Task.detached(priority: .utility) { [self] () -> NSImage? in
+                defer { inflight.withLock { $0[key] = nil } }
+                await generationSemaphore.acquire()
+                defer { Task { await generationSemaphore.release() } }
+                return await generateOnWorker(
+                    for: imagePath, cameraType: cameraType
+                )
+            }
+            inflight.withLock { $0[key] = task }
         }
-        inflight.withLock { $0[key] = task }
-        return await withTaskCancellationHandler {
-            await task.value
-        } onCancel: {
-            task.cancel()
-        }
+        return await task.value
     }
 
     // MARK: - Generation
