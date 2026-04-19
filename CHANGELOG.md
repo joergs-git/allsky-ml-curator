@@ -4,6 +4,37 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.5.1] — 2026-04-19
+
+UI stays responsive during `⌘T`. The 0.5.0 MLP refit is heavier
+than the 0.4.x linear logreg (one extra matmul pair per iteration,
+× 6 fits counting CV), and the whole GD loop was running
+synchronously on the MainActor via an `@MainActor` instance
+method. Result: the UI froze for a minute+ on the full 14.9k-label
+set, pointer went beach-balled, the user couldn't tell whether the
+app was still alive or deadlocked.
+
+### Changed
+- **Training math is now nonisolated.** All the Accelerate / vDSP
+  helpers (`fitFullModel`, `runCrossValidation`,
+  `runCrossValidationIfFeasible`, `computeSampleWeights`,
+  `forwardMLP`, `forwardLinear`, `softmaxInPlace`,
+  `applySampleWeights`, `multiply`, `crossEntropyLoss`) are
+  `nonisolated static` and take the `Hyperparameters` +
+  `numClasses` they need as explicit parameters, so they don't
+  require MainActor.
+- **`train()` dispatches to `Task.detached(priority: .userInitiated)`.**
+  The detached task returns a `Sendable TrainingResult`; only the
+  commit (assign weights to `self`, bump `weightsVersion`, write
+  the summary) happens back on MainActor. `recomputeAllPredictions`
+  + `persistTrainedModel` already awaited their own detached paths,
+  so those stay unchanged.
+
+### Removed
+- `runGradientDescent` (collapsed into `fitFullModel` which now
+  returns the final loss + training accuracy alongside the four
+  parameter tensors). One source of truth for the MLP math.
+
 ## [0.5.0] — 2026-04-19
 
 Replaces the linear logistic-regression classifier with a

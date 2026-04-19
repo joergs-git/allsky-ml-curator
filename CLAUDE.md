@@ -1,7 +1,7 @@
 # Allsky-ML-Curator — Claude Code Master Document
 
 > Native macOS (Apple Silicon, Metal-accelerated) image curator with on-device ML.
-> **Version:** 0.5.0 — rate → retrain → auto-rate → inspect → targeted re-ingest → remove-wrong-ones workflow is end-to-end. Classifier is now a two-layer MLP (hidden dim tunable in Preferences); embedding warmer is re-triggerable mid-session; class weighting is a per-class boost vector.
+> **Version:** 0.5.1 — rate → retrain → auto-rate → inspect → targeted re-ingest → remove-wrong-ones workflow is end-to-end. Classifier is a two-layer MLP (hidden dim tunable in Preferences); training runs on a detached task so the UI stays responsive during ⌘T; embedding warmer is re-triggerable mid-session; class weighting is a per-class boost vector.
 
 ---
 

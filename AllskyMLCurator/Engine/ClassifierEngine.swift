@@ -134,7 +134,7 @@ final class ClassifierEngine: ObservableObject {
 
     // MARK: - Config
 
-    private struct Hyperparameters {
+    fileprivate struct Hyperparameters: Sendable {
         var iterations: Int
         var learningRate: Float
         var l2: Float
@@ -249,36 +249,66 @@ final class ClassifierEngine: ObservableObject {
                 }
             }
 
-            let weightsPerSample = sampleWeights(
-                classCounts: classCounts,
-                samples: samples
-            )
+            // Hand the heavy math to a detached task so the MainActor
+            // (and therefore the UI) keeps running while we grind
+            // through ~200 iterations of GD + 5 CV folds. Was a
+            // silent pain in 0.4.x when the linear head took ~50 s
+            // of beach ball; with the 0.5.0 MLP the synchronous-on-
+            // MainActor implementation turned into a full-minute
+            // freeze. 0.5.1 gets it off the main thread.
+            let hpSnapshot = hp
+            let kSnapshot = numClasses
+            let classCountsSnapshot = classCounts
 
-            let (finalLoss, trainAccuracy) = runGradientDescent(
-                samples: samples,
-                sampleWeights: weightsPerSample
-            )
+            let result = await Task.detached(priority: .userInitiated) {
+                () -> TrainingResult in
+                let weightsPerSample = Self.computeSampleWeights(
+                    samples: samples,
+                    classCounts: classCountsSnapshot,
+                    classBoosts: hpSnapshot.classBoosts,
+                    numClasses: kSnapshot
+                )
+                let fit = Self.fitFullModel(
+                    samples: samples,
+                    sampleWeights: weightsPerSample,
+                    hp: hpSnapshot,
+                    numClasses: kSnapshot
+                )
+                let cv = Self.runCrossValidationIfFeasible(
+                    samples: samples,
+                    classCounts: classCountsSnapshot,
+                    sampleWeights: weightsPerSample,
+                    hp: hpSnapshot,
+                    numClasses: kSnapshot
+                )
+                return TrainingResult(
+                    weights1: fit.W1, bias1: fit.b1,
+                    weights2: fit.W2, bias2: fit.b2,
+                    featureDim: samples[0].features.count,
+                    hiddenDim: hpSnapshot.hiddenDim,
+                    finalLoss: fit.loss,
+                    trainAccuracy: fit.accuracy,
+                    cv: cv
+                )
+            }.value
 
-            // Generalization estimate via 5-fold CV. Requires at
-            // least ~10 samples in every represented class, else each
-            // fold's train set would lose a whole class and the
-            // accuracy number becomes misleading. When too small,
-            // we still report train accuracy and the user gets a
-            // note in the analysis helper explaining why CV is off.
-            let cvResult = runCrossValidationIfFeasible(
-                samples: samples,
-                classCounts: classCounts,
-                sampleWeights: weightsPerSample
-            )
+            // Commit onto self on MainActor.
+            self.weights1 = result.weights1
+            self.bias1 = result.bias1
+            self.weights2 = result.weights2
+            self.bias2 = result.bias2
+            self.featureDim = result.featureDim
+            self.hiddenDim = result.hiddenDim
 
             let duration = Date().timeIntervalSince(started)
+            let cvResult = result.cv
 
             summary = TrainingSummary(
                 trainedAt: Date(),
                 sampleCount: samples.count,
                 classCounts: classCounts,
-                finalLoss: finalLoss,
-                trainAccuracy: trainAccuracy,
+                finalLoss: result.finalLoss,
+                trainAccuracy: result.trainAccuracy,
                 cvAccuracy: cvResult?.accuracy,
                 confusionMatrix: cvResult?.confusion,
                 classMetrics: cvResult.map {
@@ -472,7 +502,7 @@ final class ClassifierEngine: ObservableObject {
 
     // MARK: - Data loading
 
-    private struct LabeledSample: Sendable {
+    fileprivate struct LabeledSample: Sendable {
         let imageId: Int64
         let features: [Float]
         let classIndex: Int         // 0…4 → RatingClass 1…5
@@ -540,221 +570,63 @@ final class ClassifierEngine: ObservableObject {
         )
     }
 
-    private func sampleWeights(
+    /// Per-sample effective weight vector = (inverse-frequency class
+    /// weight × per-class boost × per-label sample weight), mean-
+    /// normalised so the effective learning rate stays comparable to
+    /// an unweighted run.
+    nonisolated fileprivate static func computeSampleWeights(
+        samples: [LabeledSample],
         classCounts: [Int],
-        samples: [LabeledSample]
+        classBoosts: [Float],
+        numClasses: Int
     ) -> [Float] {
-        // Inverse-frequency weights with a per-class multiplicative
-        // boost from `hp.classBoosts`. Starting in 0.4.2 every class
-        // has its own tunable knob; before that a single
-        // `clearClassBoost` was applied uniformly to classes 4 + 5
-        // (c >= 3) — which over-collapsed class 1 at the 14.9k-label
-        // scale, since the boosted-but-already-bright class-5 samples
-        // dominated the gradient and class-1 samples were starved
-        // below the decision boundary.
         let total = Float(samples.count)
         var classWeights = [Float](repeating: 1, count: numClasses)
         for c in 0..<numClasses where classCounts[c] > 0 {
             let invFreq = total / Float(classCounts[c] * numClasses)
-            let boost = c < hp.classBoosts.count ? hp.classBoosts[c] : 1.0
+            let boost = c < classBoosts.count ? classBoosts[c] : 1.0
             classWeights[c] = invFreq * boost
         }
-        // Normalise so the mean weight stays around 1 — keeps the
-        // effective learning rate comparable to an unweighted run.
         let mean = classWeights.reduce(0, +) / Float(numClasses)
         if mean > 0 { for c in 0..<numClasses { classWeights[c] /= mean } }
-
-        // Multiply the per-label sampleWeight into the per-sample
-        // weight so `transitional_flag = true` human labels (weight
-        // 0.5) and `auto_confirmed` labels (0.3) drag the gradient
-        // proportionally less. Without this step the 0.5 sat idly on
-        // the label rows without ever reaching the optimiser.
         return samples.map {
             classWeights[$0.classIndex] * $0.labelWeight
         }
     }
 
-    // MARK: - Gradient descent
-
-    /// Full-batch softmax-CE gradient descent over the two-layer MLP.
-    /// Trains both layers simultaneously, stores the result in
-    /// `self.weights{1,2}` / `self.bias{1,2}`, returns the final
-    /// weighted loss + unweighted training accuracy for the summary row.
-    private func runGradientDescent(
-        samples: [LabeledSample],
-        sampleWeights: [Float]
-    ) -> (loss: Float, accuracy: Float) {
-        let N = samples.count
-        let D = samples[0].features.count
-        let H = hp.hiddenDim
-        let K = numClasses
-
-        // Pack X row-major: [N × D]
-        var X = [Float](repeating: 0, count: N * D)
-        for (i, sample) in samples.enumerated() {
-            for j in 0..<D { X[i * D + j] = sample.features[j] }
-        }
-        let y = samples.map(\.classIndex)
-
-        // One-hot Y [N × K]
-        var Y = [Float](repeating: 0, count: N * K)
-        for (i, c) in y.enumerated() { Y[i * K + c] = 1 }
-
-        // Layer init — He for W1 (ReLU), Xavier-ish for W2.
-        // featureDim hasn't been set yet for the first fresh train;
-        // record it here so downstream snapshots are consistent.
-        featureDim = D
-        hiddenDim = H
-        weights1 = Self.initialHeWeights(inDim: D, outDim: H, seed: 1)
-        bias1    = [Float](repeating: 0, count: H)
-        weights2 = Self.initialHeWeights(inDim: H, outDim: K, seed: 2)
-        bias2    = [Float](repeating: 0, count: K)
-
-        // Forward buffers.
-        var pre1  = [Float](repeating: 0, count: N * H)   // X @ W1 + b1
-        var hAct  = [Float](repeating: 0, count: N * H)   // ReLU(pre1)
-        var probs = [Float](repeating: 0, count: N * K)   // softmax(H @ W2 + b2)
-        // Backward buffers.
-        var dPre1  = [Float](repeating: 0, count: N * H)
-        var dH     = [Float](repeating: 0, count: N * H)
-        var dW1    = [Float](repeating: 0, count: D * H)
-        var dB1    = [Float](repeating: 0, count: H)
-        var dW2    = [Float](repeating: 0, count: H * K)
-        var dB2    = [Float](repeating: 0, count: K)
-
-        var finalLoss: Float = 0
-
-        for _ in 0..<hp.iterations {
-            forwardMLP(
-                X: X,
-                W1: weights1, b1: bias1,
-                W2: weights2, b2: bias2,
-                pre1: &pre1, hAct: &hAct, probs: &probs,
-                N: N, D: D, H: H, K: K
-            )
-
-            // Softmax-CE gradient w.r.t. logits: (P - Y), scaled by
-            // per-sample weight and divided by N.
-            var diff = probs
-            vDSP.subtract(probs, Y, result: &diff)
-            applySampleWeights(to: &diff, weights: sampleWeights, K: K)
-            var invN = Float(1) / Float(N)
-            vDSP_vsmul(diff, 1, &invN, &diff, 1, vDSP_Length(N * K))
-
-            // Output layer grads.
-            // dW2 = hAct^T @ diff  →  [H × K]
-            multiply(
-                aT: true, a: hAct, aRows: N, aCols: H,
-                bT: false, b: diff, bRows: N, bCols: K,
-                out: &dW2
-            )
-            // dB2 = column sums of diff.
-            for k in 0..<K {
-                var colSum: Float = 0
-                for i in 0..<N { colSum += diff[i * K + k] }
-                dB2[k] = colSum
-            }
-
-            // Hidden layer grads.
-            // dH = diff @ W2^T  →  [N × H]
-            multiply(
-                aT: false, a: diff, aRows: N, aCols: K,
-                bT: true, b: weights2, bRows: H, bCols: K,
-                out: &dH
-            )
-            // dPre1 = dH * (pre1 > 0).  ReLU derivative gate.
-            for idx in 0..<(N * H) {
-                dPre1[idx] = pre1[idx] > 0 ? dH[idx] : 0
-            }
-            // dW1 = X^T @ dPre1  →  [D × H]
-            multiply(
-                aT: true, a: X, aRows: N, aCols: D,
-                bT: false, b: dPre1, bRows: N, bCols: H,
-                out: &dW1
-            )
-            // dB1 = column sums of dPre1.
-            for h in 0..<H {
-                var colSum: Float = 0
-                for i in 0..<N { colSum += dPre1[i * H + h] }
-                dB1[h] = colSum
-            }
-
-            // L2 regularisation on both weight matrices.
-            var lambda = hp.l2
-            var two: Float = 2
-            var l2scale = lambda * two
-            vDSP_vsma(
-                weights1, 1, &l2scale, dW1, 1, &dW1, 1,
-                vDSP_Length(D * H)
-            )
-            vDSP_vsma(
-                weights2, 1, &l2scale, dW2, 1, &dW2, 1,
-                vDSP_Length(H * K)
-            )
-
-            // Parameter update: θ -= lr * grad.
-            var negLR = -hp.learningRate
-            vDSP_vsma(
-                dW1, 1, &negLR, weights1, 1, &weights1, 1,
-                vDSP_Length(D * H)
-            )
-            vDSP_vsma(
-                dB1, 1, &negLR, bias1, 1, &bias1, 1,
-                vDSP_Length(H)
-            )
-            vDSP_vsma(
-                dW2, 1, &negLR, weights2, 1, &weights2, 1,
-                vDSP_Length(H * K)
-            )
-            vDSP_vsma(
-                dB2, 1, &negLR, bias2, 1, &bias2, 1,
-                vDSP_Length(K)
-            )
-
-            finalLoss = crossEntropyLoss(
-                probs: probs, y: y, weights: sampleWeights
-            )
-        }
-
-        // Training accuracy (unweighted).
-        forwardMLP(
-            X: X,
-            W1: weights1, b1: bias1,
-            W2: weights2, b2: bias2,
-            pre1: &pre1, hAct: &hAct, probs: &probs,
-            N: N, D: D, H: H, K: K
-        )
-        var correct = 0
-        for i in 0..<N {
-            var best: Float = -.greatestFiniteMagnitude
-            var bestIdx = 0
-            for k in 0..<K where probs[i * K + k] > best {
-                best = probs[i * K + k]
-                bestIdx = k
-            }
-            if bestIdx == y[i] { correct += 1 }
-        }
-        let accuracy = Float(correct) / Float(N)
-
-        return (finalLoss, accuracy)
-    }
-
     // MARK: - Cross-validation
 
-    private struct CVResult {
+    fileprivate struct CVResult: Sendable {
         let accuracy: Float
         /// Row-major K × K matrix where [true × K + predicted] = count.
         let confusion: [Int]
+    }
+
+    /// Bundle of everything the MainActor needs to commit after the
+    /// detached training task returns. Kept Sendable so Task.detached
+    /// → MainActor transfer is frictionless.
+    private struct TrainingResult: Sendable {
+        var weights1: [Float]
+        var bias1: [Float]
+        var weights2: [Float]
+        var bias2: [Float]
+        var featureDim: Int
+        var hiddenDim: Int
+        var finalLoss: Float
+        var trainAccuracy: Float
+        var cv: CVResult?
     }
 
     /// Decide whether we can afford a 5-fold CV and run it.
     /// Skipped when any represented class has fewer than 10 samples —
     /// at that point one fold's training set loses the class entirely
     /// and the reported accuracy misleads.
-    private func runCrossValidationIfFeasible(
+    nonisolated fileprivate static func runCrossValidationIfFeasible(
         samples: [LabeledSample],
         classCounts: [Int],
-        sampleWeights: [Float]
+        sampleWeights: [Float],
+        hp: Hyperparameters,
+        numClasses: Int
     ) -> CVResult? {
         let minSamplesPerClass = 10
         let smallestPresentClass = classCounts.filter { $0 > 0 }.min() ?? 0
@@ -762,7 +634,10 @@ final class ClassifierEngine: ObservableObject {
               smallestPresentClass >= minSamplesPerClass
         else { return nil }
         return runCrossValidation(
-            samples: samples, sampleWeights: sampleWeights
+            samples: samples,
+            sampleWeights: sampleWeights,
+            hp: hp,
+            numClasses: numClasses
         )
     }
 
@@ -771,9 +646,11 @@ final class ClassifierEngine: ObservableObject {
     /// whole dataset exactly once, giving an honest generalisation
     /// accuracy. Same hyperparameters as the main train() call so
     /// the number reflects the model the user actually gets.
-    private func runCrossValidation(
+    nonisolated fileprivate static func runCrossValidation(
         samples: [LabeledSample],
-        sampleWeights: [Float]
+        sampleWeights: [Float],
+        hp: Hyperparameters,
+        numClasses: Int
     ) -> CVResult {
         let K = numClasses
         let n = samples.count
@@ -812,12 +689,15 @@ final class ClassifierEngine: ObservableObject {
             let trainClassSet = Set(trainSamples.map(\.classIndex))
             guard trainClassSet.count >= 2 else { continue }
 
-            let fit = fitMLP(
-                samples: trainSamples, sampleWeights: trainWeights
+            let fit = fitFullModel(
+                samples: trainSamples,
+                sampleWeights: trainWeights,
+                hp: hp,
+                numClasses: K
             )
 
             for sample in testSamples {
-                let predicted = Self.argmaxPrediction(
+                let predicted = argmaxPrediction(
                     vector: sample.features,
                     weights1: fit.W1, bias1: fit.b1,
                     weights2: fit.W2, bias2: fit.b2,
@@ -832,14 +712,23 @@ final class ClassifierEngine: ObservableObject {
         return CVResult(accuracy: accuracy, confusion: confusion)
     }
 
-    /// Extracted from runGradientDescent so the CV loop can refit
-    /// without touching the live `self.weights{1,2}`. Same numerics:
-    /// He-init → full-batch softmax-CE GD over the two layers → L2 on
-    /// both weight matrices, per-sample weight scaling on the diff.
-    private func fitMLP(
+    /// Full-batch softmax-CE gradient descent over the two-layer MLP.
+    /// Pure nonisolated function — reads nothing from `self`, writes
+    /// nothing to `self`, so it's safe to call from a
+    /// `Task.detached` without inheriting MainActor isolation. Caller
+    /// commits the returned weights + loss + accuracy.
+    ///
+    /// Numerics: He-init (xorshift seeded per layer) →
+    /// full-batch softmax-CE GD over both layers → L2 on both weight
+    /// matrices, per-sample weight scaling on the diff. The inner
+    /// loss / accuracy are averaged over samples, not classes.
+    nonisolated fileprivate static func fitFullModel(
         samples: [LabeledSample],
-        sampleWeights: [Float]
-    ) -> (W1: [Float], b1: [Float], W2: [Float], b2: [Float], H: Int) {
+        sampleWeights: [Float],
+        hp: Hyperparameters,
+        numClasses: Int
+    ) -> (W1: [Float], b1: [Float], W2: [Float], b2: [Float],
+          H: Int, loss: Float, accuracy: Float) {
         let N = samples.count
         let D = samples[0].features.count
         let H = hp.hiddenDim
@@ -853,9 +742,9 @@ final class ClassifierEngine: ObservableObject {
         var Y = [Float](repeating: 0, count: N * K)
         for (i, c) in y.enumerated() { Y[i * K + c] = 1 }
 
-        var W1 = Self.initialHeWeights(inDim: D, outDim: H, seed: 1)
+        var W1 = initialHeWeights(inDim: D, outDim: H, seed: 1)
         var b1 = [Float](repeating: 0, count: H)
-        var W2 = Self.initialHeWeights(inDim: H, outDim: K, seed: 2)
+        var W2 = initialHeWeights(inDim: H, outDim: K, seed: 2)
         var b2 = [Float](repeating: 0, count: K)
 
         var pre1  = [Float](repeating: 0, count: N * H)
@@ -867,6 +756,8 @@ final class ClassifierEngine: ObservableObject {
         var dB1   = [Float](repeating: 0, count: H)
         var dW2   = [Float](repeating: 0, count: H * K)
         var dB2   = [Float](repeating: 0, count: K)
+
+        var finalLoss: Float = 0
 
         for _ in 0..<hp.iterations {
             forwardMLP(
@@ -924,16 +815,42 @@ final class ClassifierEngine: ObservableObject {
             vDSP_vsma(dB1, 1, &negLR, b1, 1, &b1, 1, vDSP_Length(H))
             vDSP_vsma(dW2, 1, &negLR, W2, 1, &W2, 1, vDSP_Length(H * K))
             vDSP_vsma(dB2, 1, &negLR, b2, 1, &b2, 1, vDSP_Length(K))
+
+            finalLoss = crossEntropyLoss(
+                probs: probs, y: y, weights: sampleWeights, numClasses: K
+            )
         }
 
-        return (W1, b1, W2, b2, H)
+        // Training accuracy (unweighted) — fresh forward pass on the
+        // final weights so the argmax matches the model the caller
+        // will persist.
+        forwardMLP(
+            X: X,
+            W1: W1, b1: b1,
+            W2: W2, b2: b2,
+            pre1: &pre1, hAct: &hAct, probs: &probs,
+            N: N, D: D, H: H, K: K
+        )
+        var correct = 0
+        for i in 0..<N {
+            var best: Float = -.greatestFiniteMagnitude
+            var bestIdx = 0
+            for k in 0..<K where probs[i * K + k] > best {
+                best = probs[i * K + k]
+                bestIdx = k
+            }
+            if bestIdx == y[i] { correct += 1 }
+        }
+        let accuracy = Float(correct) / Float(N)
+
+        return (W1, b1, W2, b2, H, finalLoss, accuracy)
     }
 
     /// Argmax shortcut for one sample — returns the predicted class
     /// index (0…K-1). Runs the same two-layer forward as `predict`
     /// but skips the softmax normaliser since argmax is invariant
     /// under monotonic transforms.
-    private static func argmaxPrediction(
+    nonisolated static func argmaxPrediction(
         vector: [Float],
         weights1: [Float], bias1: [Float],
         weights2: [Float], bias2: [Float],
@@ -1063,7 +980,7 @@ final class ClassifierEngine: ObservableObject {
 
     /// out ← X @ W + b (row-broadcast bias). Used for both layers
     /// inside `forwardMLP` — same shape math, just different dims.
-    private func forwardLinear(
+    nonisolated static func forwardLinear(
         X: [Float], W: [Float], b: [Float],
         out: inout [Float],
         N: Int, inDim: Int, outDim: Int
@@ -1084,7 +1001,7 @@ final class ClassifierEngine: ObservableObject {
 
     /// Full forward pass for the two-layer MLP, reusing caller-owned
     /// buffers so the GD loop doesn't allocate per iteration.
-    private func forwardMLP(
+    nonisolated static func forwardMLP(
         X: [Float],
         W1: [Float], b1: [Float],
         W2: [Float], b2: [Float],
@@ -1127,7 +1044,7 @@ final class ClassifierEngine: ObservableObject {
     }
 
     /// out ← softmax(out) row-wise with numerical stabilisation.
-    private func softmaxInPlace(
+    nonisolated static func softmaxInPlace(
         _ out: inout [Float], N: Int, K: Int
     ) {
         for i in 0..<N {
@@ -1149,7 +1066,7 @@ final class ClassifierEngine: ObservableObject {
         }
     }
 
-    private func applySampleWeights(
+    nonisolated static func applySampleWeights(
         to diff: inout [Float], weights: [Float], K: Int
     ) {
         for (i, w) in weights.enumerated() {
@@ -1158,7 +1075,7 @@ final class ClassifierEngine: ObservableObject {
         }
     }
 
-    private func multiply(
+    nonisolated static func multiply(
         aT: Bool, a: [Float], aRows: Int, aCols: Int,
         bT: Bool, b: [Float], bRows: Int, bCols: Int,
         out: inout [Float]
@@ -1177,13 +1094,12 @@ final class ClassifierEngine: ObservableObject {
         )
     }
 
-    private func crossEntropyLoss(
-        probs: [Float], y: [Int], weights: [Float]
+    nonisolated static func crossEntropyLoss(
+        probs: [Float], y: [Int], weights: [Float], numClasses: Int
     ) -> Float {
         var sum: Float = 0
-        let K = numClasses
         for (i, c) in y.enumerated() {
-            let p = max(probs[i * K + c], 1e-7)
+            let p = max(probs[i * numClasses + c], 1e-7)
             sum += -weights[i] * logf(p)
         }
         return sum / Float(y.count)
