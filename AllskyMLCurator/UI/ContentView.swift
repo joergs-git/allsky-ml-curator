@@ -238,6 +238,16 @@ struct ContentView: View {
             .onChange(of: ratingFilter) { _, _ in
                 Task { await reload() }
             }
+            .onChange(of: classifier.summary?.trainedAt) { _, _ in
+                // A fresh retrain repopulates `classifier.predictions`;
+                // if we're sitting on `.mismatches` the old `items`
+                // still reflect the previous model. Re-apply the
+                // post-filter so the view jumps to the new mismatch set
+                // instead of staying stale.
+                if case .mismatches = ratingFilter {
+                    Task { await reload() }
+                }
+            }
 
             Picker("", selection: $viewMode) {
                 ForEach(ViewMode.allCases) { mode in
@@ -752,8 +762,24 @@ struct ContentView: View {
             cameraType: cameraFilter,
             ratingFilter: ratingFilter
         )
-        items = loaded
-        selectedIds.formIntersection(Set(loaded.map(\.id)))
+        // `.mismatches` is the only filter whose predicate depends on
+        // in-memory classifier predictions (not persisted to SQLite),
+        // so it must be applied post-fetch. For every other filter
+        // this short-circuits after the rated check.
+        let filtered: [ImageLibrary.ImageListItem]
+        if case .mismatches = ratingFilter {
+            let preds = classifier.predictions
+            filtered = loaded.filter { item in
+                guard let rating = item.label?.ratingClass, rating != .unrated,
+                      let prediction = preds[item.id]
+                else { return false }
+                return prediction.topClass != rating
+            }
+        } else {
+            filtered = loaded
+        }
+        items = filtered
+        selectedIds.formIntersection(Set(filtered.map(\.id)))
         isLoading = false
     }
 

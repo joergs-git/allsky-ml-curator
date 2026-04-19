@@ -4,6 +4,35 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.5.2] — 2026-04-19
+
+Label-audit workflow. After the 0.5.0 MLP training converged on
+36 % accuracy with class 1 stuck at 10 % recall, the next
+diagnostic step is reviewing *which* frames the classifier
+disagrees with — but there was no UI path short of opening
+Inspection on every single rated tile. 0.5.2 surfaces
+disagreements directly in the matrix.
+
+### Added
+- **Mismatch indicator on rated matrix tiles.** When the
+  classifier's top pick differs from the human label, the tile
+  gets a dashed orange inner border and a small warning badge
+  in the top-right showing the predicted class number. The
+  badge takes priority over the transitional (T) flag on the
+  same corner; the underlying rating stars, tier colour, and
+  reflection (R) flag are unaffected.
+- **`RatingFilter.mismatches`** entry in the Filter picker
+  ("Only mismatches (rating ≠ prediction)"). Selects every
+  rated frame whose cached prediction disagrees with the
+  human label. Post-fetch filter — predictions live in
+  memory, not SQLite, so the DB query returns all rated rows
+  and `ContentView.reload()` applies the mismatch predicate.
+- **Auto-refresh on retrain** — watching
+  `classifier.summary?.trainedAt`: if the filter is on
+  `.mismatches` when `⌘T` finishes, the matrix re-applies the
+  post-filter against the new predictions instead of staying
+  stale against the old ones.
+
 ## [0.5.1] — 2026-04-19
 
 UI stays responsive during `⌘T`. The 0.5.0 MLP refit is heavier

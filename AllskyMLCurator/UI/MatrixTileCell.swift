@@ -41,6 +41,17 @@ struct MatrixTileCell: View {
         item.label?.transitionalFlag ?? false
     }
 
+    /// True when this tile is rated AND the classifier disagrees with
+    /// the human label. Used by the label-audit workflow to visually
+    /// pick out frames where either the model is wrong or the label
+    /// might be. Surfaced as a dashed red border + a class-number
+    /// badge so the curator can spot the mismatch without opening
+    /// Inspection on every single tile.
+    private var isMismatch: Bool {
+        guard isRated, let prediction else { return false }
+        return prediction.topClass != ratingClass
+    }
+
     private var tierColor: Color {
         AppColors.tier(ratingClass, night: nightMode)
     }
@@ -74,6 +85,10 @@ struct MatrixTileCell: View {
                         predictionBadge(prediction)
                             .padding(.trailing, bandWidth + 4)
                             .padding(.top, bandWidth + 4)
+                    } else if let prediction, isMismatch {
+                        mismatchBadge(prediction)
+                            .padding(.trailing, bandWidth + 4)
+                            .padding(.top, bandWidth + 4)
                     } else if hasTransitional {
                         flagBadge("T", color: AppColors.transitionalFlag(nightMode))
                             .padding(.trailing, bandWidth + 4)
@@ -89,6 +104,25 @@ struct MatrixTileCell: View {
                             .padding(.bottom, bandWidth + 4)
                     }
                 }
+            }
+
+            if isMismatch {
+                // Dashed warning outline painted *inside* any
+                // selection / cursor ring so a selected mismatch
+                // still reads as selected first. Colour is a deep
+                // warning orange that stays legible on both the
+                // light and dark band colours of tier 1 (red) and
+                // tier 5 (green) — a pure red border would disappear
+                // on class-1 tiles, a pure yellow one on class-4.
+                Rectangle()
+                    .strokeBorder(
+                        Color.orange.opacity(0.95),
+                        style: StrokeStyle(
+                            lineWidth: 2.5,
+                            dash: [5, 3]
+                        )
+                    )
+                    .padding(bandWidth / 2)
             }
 
             if isCursor {
@@ -191,6 +225,32 @@ struct MatrixTileCell: View {
             .background(color)
             .clipShape(Capsule())
             .shadow(color: .black.opacity(0.5), radius: 1, y: 1)
+    }
+
+    /// Warning badge shown on rated tiles when the classifier's
+    /// top pick disagrees with the human rating. Format: `⚠ {N}`
+    /// where N is the class the model would have picked. Tier-
+    /// coloured so the curator sees *what* the model predicted, not
+    /// just that there's a disagreement — two glances turn into one.
+    private func mismatchBadge(
+        _ prediction: ClassifierEngine.Prediction
+    ) -> some View {
+        let color = AppColors.tier(prediction.topClass, night: nightMode)
+        return HStack(spacing: 2) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 8, weight: .black))
+            Text("\(prediction.topClass.rawValue)")
+                .font(.system(size: 12, weight: .black, design: .monospaced))
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+        .background(color)
+        .clipShape(Capsule())
+        .overlay(
+            Capsule().stroke(Color.orange, lineWidth: 1.5)
+        )
+        .shadow(color: .black.opacity(0.5), radius: 1, y: 1)
     }
 
     /// Ghost badge showing the classifier's top pick for an unrated

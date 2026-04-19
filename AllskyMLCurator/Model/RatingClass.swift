@@ -62,16 +62,23 @@ enum LabelSource: String, Codable, Sendable {
 ///
 /// Lives here rather than in the UI layer because the database query
 /// path uses it too. `displayName` doubles as the picker label.
+///
+/// `.mismatches` is special — the DB can't evaluate it because
+/// classifier predictions live in memory, not in SQLite. The
+/// fetch path treats it the same as "any rated" and ContentView
+/// applies a post-filter against `ClassifierEngine.shared.predictions`.
 enum RatingFilter: Hashable, Identifiable, Sendable {
     case any
     case unrated
     case exactly(RatingClass)
+    case mismatches
 
     var id: String {
         switch self {
         case .any:                   return "any"
         case .unrated:               return "unrated"
         case .exactly(let c):        return "cls\(c.rawValue)"
+        case .mismatches:            return "mismatches"
         }
     }
 
@@ -82,6 +89,7 @@ enum RatingFilter: Hashable, Identifiable, Sendable {
         case .exactly(let c):
             let stars = String(repeating: "★", count: c.rawValue)
             return "Only \(stars)  \(c.shortName)"
+        case .mismatches:       return "Only mismatches (rating ≠ prediction)"
         }
     }
 
@@ -94,16 +102,20 @@ enum RatingFilter: Hashable, Identifiable, Sendable {
             .exactly(.mostly),
             .exactly(.some),
             .exactly(.thin),
-            .exactly(.clear)
+            .exactly(.clear),
+            .mismatches
         ]
     }
 
-    /// Does this filter include the given class?
+    /// Does this filter include the given class? For `.mismatches`
+    /// we return `true` for every rated class — the actual mismatch
+    /// test needs the classifier's prediction and is applied later.
     func includes(_ cls: RatingClass) -> Bool {
         switch self {
         case .any:              return true
         case .unrated:          return cls == .unrated
         case .exactly(let c):   return cls == c
+        case .mismatches:       return cls != .unrated
         }
     }
 }
