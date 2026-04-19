@@ -75,16 +75,13 @@ struct MatrixView: View {
     /// prefix key is pressed twice.
     @State private var pendingConfidence: Int?
 
-    /// Set by ⌘⌫ / Delete. Holds the IDs the user asked to remove
-    /// plus their count, and drives the confirmation alert. `nil`
-    /// means no deletion pending.
-    @State private var deletePrompt: DeletePrompt?
-
-    struct DeletePrompt: Identifiable {
-        let id = UUID()
-        let ids: [Int64]
-        var count: Int { ids.count }
-    }
+    /// Pending delete state. Using separate `isPresented` + payload
+    /// because `.alert(item:)` is deprecated and was silently not
+    /// presenting when triggered from a context menu's action
+    /// closure — the modern `.alert(_:isPresented:)` fires
+    /// reliably.
+    @State private var showDeleteConfirm: Bool = false
+    @State private var pendingDeleteIds: [Int64] = []
 
     // MARK: - Derived indices
 
@@ -163,15 +160,16 @@ struct MatrixView: View {
             .onKeyPress(phases: [.down, .repeat]) { press in
                 handleKey(press, proxy: proxy)
             }
-            .alert(item: $deletePrompt) { prompt in
-                Alert(
-                    title: Text("Remove \(prompt.count) image\(prompt.count == 1 ? "" : "s") from the library?"),
-                    message: Text("The image index row, every label, every prediction, and the cached thumbnail + embedding sidecar will be deleted locally. Supabase rows stay — re-ingest would push them back. This cannot be undone locally without re-ingest."),
-                    primaryButton: .destructive(Text("Remove")) {
-                        confirmDelete(prompt.ids)
-                    },
-                    secondaryButton: .cancel()
-                )
+            .alert(
+                "Remove \(pendingDeleteIds.count) image\(pendingDeleteIds.count == 1 ? "" : "s") from the library?",
+                isPresented: $showDeleteConfirm
+            ) {
+                Button("Remove", role: .destructive) {
+                    confirmDelete(pendingDeleteIds)
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("The image index row, every label, every prediction, and the cached thumbnail + embedding sidecar will be deleted locally. Supabase rows stay — re-ingest would push them back. This cannot be undone locally without re-ingest.")
             }
             // ⌘⌫ comes through the Edit → Delete Selected menu
             // command registered at App.commands level; it posts
@@ -189,7 +187,8 @@ struct MatrixView: View {
 
     private func requestDeleteSelection() {
         guard !selectedIds.isEmpty else { return }
-        deletePrompt = DeletePrompt(ids: Array(selectedIds))
+        pendingDeleteIds = Array(selectedIds)
+        showDeleteConfirm = true
     }
 
     /// Per-tile context menu. Right-clicking a tile that's **not**
@@ -213,7 +212,8 @@ struct MatrixView: View {
                 anchorId = item.id
                 onSelectionChange(selectedIds)
             }
-            deletePrompt = DeletePrompt(ids: Array(effectiveIds))
+            pendingDeleteIds = Array(effectiveIds)
+            showDeleteConfirm = true
         }
     }
 
@@ -451,7 +451,7 @@ struct MatrixView: View {
         // cursor tile that isn't selected.
         if press.key == .delete || press.key == .deleteForward {
             if !selectedIds.isEmpty {
-                deletePrompt = DeletePrompt(ids: Array(selectedIds))
+                requestDeleteSelection()
                 return .handled
             }
             return .ignored

@@ -30,13 +30,8 @@ struct ListView: View {
     @State private var cursorId: Int64?
     @State private var anchorId: Int64?
     @FocusState private var isFocused: Bool
-    @State private var deletePrompt: DeletePrompt?
-
-    struct DeletePrompt: Identifiable {
-        let id = UUID()
-        let ids: [Int64]
-        var count: Int { ids.count }
-    }
+    @State private var showDeleteConfirm: Bool = false
+    @State private var pendingDeleteIds: [Int64] = []
 
     private var cursorIndex: Int {
         guard let cursorId,
@@ -95,15 +90,16 @@ struct ListView: View {
             .onKeyPress(phases: [.down, .repeat]) { press in
                 handleKey(press, proxy: proxy)
             }
-            .alert(item: $deletePrompt) { prompt in
-                Alert(
-                    title: Text("Remove \(prompt.count) image\(prompt.count == 1 ? "" : "s") from the library?"),
-                    message: Text("The image index row, every label, every prediction, and the cached thumbnail + embedding sidecar will be deleted locally. Supabase rows stay — re-ingest would push them back. This cannot be undone locally without re-ingest."),
-                    primaryButton: .destructive(Text("Remove")) {
-                        confirmDelete(prompt.ids)
-                    },
-                    secondaryButton: .cancel()
-                )
+            .alert(
+                "Remove \(pendingDeleteIds.count) image\(pendingDeleteIds.count == 1 ? "" : "s") from the library?",
+                isPresented: $showDeleteConfirm
+            ) {
+                Button("Remove", role: .destructive) {
+                    confirmDelete(pendingDeleteIds)
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("The image index row, every label, every prediction, and the cached thumbnail + embedding sidecar will be deleted locally. Supabase rows stay — re-ingest would push them back. This cannot be undone locally without re-ingest.")
             }
             .onReceive(NotificationCenter.default.publisher(
                 for: .deleteSelectedImagesRequested
@@ -115,7 +111,8 @@ struct ListView: View {
 
     private func requestDeleteSelection() {
         guard !selectedIds.isEmpty else { return }
-        deletePrompt = DeletePrompt(ids: Array(selectedIds))
+        pendingDeleteIds = Array(selectedIds)
+        showDeleteConfirm = true
     }
 
     @ViewBuilder
@@ -134,7 +131,8 @@ struct ListView: View {
                 anchorId = item.id
                 onSelectionChange(selectedIds)
             }
-            deletePrompt = DeletePrompt(ids: Array(effectiveIds))
+            pendingDeleteIds = Array(effectiveIds)
+            showDeleteConfirm = true
         }
     }
 
@@ -366,7 +364,7 @@ struct ListView: View {
 
         if press.key == .delete || press.key == .deleteForward {
             if !selectedIds.isEmpty {
-                deletePrompt = DeletePrompt(ids: Array(selectedIds))
+                requestDeleteSelection()
                 return .handled
             }
             return .ignored
