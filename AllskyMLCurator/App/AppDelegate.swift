@@ -26,9 +26,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // on a clean DB. Labels + predictions stay attached since
         // we're only rewriting the path column.
         repairLegacyVolumePaths()
+        // Back-fill reflectionRiskScore for daytime colour-camera
+        // rows whose score was computed under the pre-fix formula
+        // that returned 0 for any sun above the horizon.
+        repairLegacyReflectionRisk()
 
         keyboardHandler = KeyboardHandler()
         keyboardHandler?.install()
+    }
+
+    /// Back-fill reflectionRiskScore for color-camera daytime rows
+    /// that were ingested under the pre-fix "sun above horizon →
+    /// 0 risk" formula. Idempotent: only touches rows whose current
+    /// score is below the new daylight floor (0.7).
+    private func repairLegacyReflectionRisk() {
+        do {
+            let patched = try Database.shared.writer.write { db -> Int in
+                try db.execute(sql: """
+                    UPDATE images
+                    SET reflectionRiskScore = max(
+                        reflectionRiskScore,
+                        max(0.7, 1.0 - abs(sunAltDeg - 30.0) / 60.0)
+                    )
+                    WHERE cameraSource = 'color_allsky_jpg'
+                      AND sunAltDeg > 0
+                      AND reflectionRiskScore < 0.7
+                    """)
+                return db.changesCount
+            }
+            if patched > 0 {
+                NSLog("AppDelegate repaired \(patched) daytime reflectionRiskScore entries at launch.")
+            }
+        } catch {
+            NSLog("AppDelegate reflection-risk repair failed: \(error)")
+        }
     }
 
     private func repairLegacyVolumePaths() {

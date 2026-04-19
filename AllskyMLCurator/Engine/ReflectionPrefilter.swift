@@ -35,25 +35,42 @@ enum ReflectionPrefilter {
 
     /// Sun-driven reflection risk.
     ///
-    /// - For a mono (non-day-capable) camera, any sun above −6° is an
-    ///   exclusion event, not just a reflection risk — but this scorer
-    ///   still emits a high value so the UI can show the halo during
-    ///   the narrow sliver when the frame exists but is flagged.
-    /// - For a color (day-capable) camera, daylight frames need no
-    ///   reflection treatment; dawn/dusk twilight is where reflections
-    ///   actually appear on the dome.
+    /// - For a mono (non-day-capable) camera, any sun above −6° is
+    ///   an exclusion event; the score goes full-high so the UI
+    ///   still signals the narrow sliver where the frame exists
+    ///   but is flagged.
+    /// - For a color (day-capable) camera, every daylight frame
+    ///   carries real reflection risk — plexiglass-dome specular
+    ///   glare, scattered light in the optical path, and direct
+    ///   sun streaks in the image. The earlier model returned 0
+    ///   for any `sunAlt > 0` based on a "handled elsewhere"
+    ///   comment that wasn't actually true, which left blatantly
+    ///   sun-streaked midday tiles scoring 0.00. Fixed here with
+    ///   a piecewise model:
+    ///     • sun above horizon: piecewise ramp peaking at ~30°
+    ///       altitude (where the specular angle off the dome is
+    ///       strongest) and never dropping below 0.7 while the
+    ///       sun is up — any daytime color frame always warrants
+    ///       the amber halo.
+    ///     • civil / nautical twilight (0 ≥ sunAlt ≥ −12°):
+    ///       linear ramp from 1 at sunset to 0 at end of nautical
+    ///       twilight.
+    ///     • astronomical night (sunAlt < −12°): no sun
+    ///       contribution.
     private static func sunRisk(
         sunAltDeg: Double,
         cameraIsDayCapable: Bool
     ) -> Double {
         if cameraIsDayCapable {
-            // Daylight: no reflection concern — glare model handled elsewhere.
-            if sunAltDeg > 0 { return 0.0 }
-            // Civil / nautical twilight: reflections appear on the dome
-            // and can masquerade as clouds.
+            if sunAltDeg > 0 {
+                // Peak near the dome's specular-angle sweet spot
+                // (~30°), floor at 0.7 across the daylight band.
+                let offAxis = abs(sunAltDeg - 30.0) / 60.0
+                return clamp(1.0 - offAxis, min: 0.7, max: 1.0)
+            }
             if sunAltDeg > -12 {
-                // Linear ramp: 0 at sun_alt = -12°, 1 at sun_alt = +6°.
-                return clamp((sunAltDeg + 12) / 18, min: 0, max: 1)
+                // Linear ramp: 1 at sunset (0°), 0 at nautical (−12°).
+                return clamp((sunAltDeg + 12) / 12, min: 0, max: 1)
             }
             return 0.0
         } else {
