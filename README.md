@@ -56,7 +56,8 @@ The resulting labeled dataset feeds three downstream uses:
 - **Autonomous streaming auto-rate** (`⌘⇧A`) — writes high-confidence `source='auto'` labels one tile at a time, live counter, mid-run stop. Gated behind a configurable minimum of human labels.
 - **Live ML loop** — Apple Vision FeaturePrint embedding + BNNS logistic-regression head trained with inverse-frequency + clear-sky boost weighting. Retrain in < 200 ms on typical Rheine datasets; 5-fold CV with per-class precision / recall / F1 + confusion-matrix heatmap.
 - **Classifier persistence** across launches (train accuracy + duration rehydrated from `model_versions.notes`).
-- **Forecast aux features** — meteoblue totalcloud + seeing + has-forecast flag denormalised per-frame into the 782-dim aux vector.
+- **Forecast aux features** — meteoblue totalcloud + seeing + has-forecast flag denormalised per-frame into the 784-dim aux vector.
+- **CloudWatcher sky-temp aux features** — the AAG Solo's ambient-compensated IR sky temperature (already a delta-normalised ground-truth reading taken next to the camera) is mapped to `[0, 1]` across its useful `[−15 °C, +10 °C]` band and fed into training alongside a has-skytemp gate, so rows without a matched cloudwatcher sync don't inject a fabricated "clear" signal.
 - **Cloud motion detection** — Vision translational registration between consecutive same-camera frames yields a °/min rate + compass bearing (when the north offset is calibrated).
 - **Geometric reflection + transitional prefilters** — sun / moon / AE-stability feed deterministic risk scores used as aux features. Daytime reflection risk peaks at ~30° sun altitude (plexiglass specular angle) with a 0.7 floor across the daylight band.
 - **Dynamic zenith crop** — horizon-exclusion slider + per-camera FoV compute a symmetric cone applied identically to thumbnail and embedding.

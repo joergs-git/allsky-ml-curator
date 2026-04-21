@@ -21,8 +21,21 @@ import Foundation
 /// [779]        mb_has_forecast         (0 or 1)
 /// [780]        mb_total_cloud_norm     (totalcloud / 100, 0…1)
 /// [781]        mb_seeing_norm          ((seeing_arcsec - 1) / 5, clamped)
+/// [782]        cw_has_skytemp          (0 or 1)
+/// [783]        cw_skytemp_norm         ((skyTempC + 15) / 25, clamped)
 /// ```
-/// Total: 782 features.
+/// Total: 784 features.
+///
+/// Why sky-temp is ground truth, not a forecast: the AAG CloudWatcher
+/// Solo is installed next to the camera and its reported `sky_temp` is
+/// already ambient-compensated and seasonally normalised by the sensor
+/// firmware — i.e. it's a delta against a dynamic baseline, not a raw
+/// IR reading. Typical range at this site is roughly −15 °C (clearest
+/// cold sky) to +10 °C (fully overcast warm sky), so `(T + 15) / 25`
+/// maps the useful band to [0, 1] with hard clamping on either side.
+/// The has-skytemp gate follows the meteoblue-forecast pattern so
+/// pre-cloudwatcher-sync frames don't inject a fabricated −15 °C
+/// "clear" signal into training.
 ///
 /// Why the two risk scores matter: a frame with a strong sun / moon
 /// reflection looks bright and "feature-rich" in image space alone,
@@ -38,7 +51,7 @@ enum FeatureVectorBuilder {
 
     /// Aux-only slice length. Embedding length is appended on top by
     /// the embedding pipeline and known per revision at runtime.
-    static let auxCount = 14
+    static let auxCount = 16
 
     /// Build the full feature vector for one image. Returns `nil`
     /// when either the cached embedding or the basic ImageRecord
@@ -81,6 +94,11 @@ enum FeatureVectorBuilder {
             ? Float(max(0.0, min(1.0, ((image.meteoblueSeeingArcsec ?? 1.0) - 1.0) / 5.0)))
             : 0
 
+        let hasSkyTemp: Float = image.cloudwatcherSkyTempC != nil ? 1 : 0
+        let skyTempNorm: Float = image.cloudwatcherSkyTempC.map {
+            Float(max(0.0, min(1.0, ($0 + 15.0) / 25.0)))
+        } ?? 0
+
         return [
             Float(image.sunAltDeg / 90.0),
             Float(sin(sunAzRad)),
@@ -95,7 +113,9 @@ enum FeatureVectorBuilder {
             Float(image.transitionalRiskScore),
             hasForecast,
             cloudNorm,
-            seeingNorm
+            seeingNorm,
+            hasSkyTemp,
+            skyTempNorm
         ]
     }
 

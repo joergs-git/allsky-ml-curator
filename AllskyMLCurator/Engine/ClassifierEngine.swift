@@ -1037,7 +1037,7 @@ final class ClassifierEngine: ObservableObject {
     /// He-uniform init for a Dense layer: ±sqrt(6 / inDim). Feeds a
     /// ReLU or softmax downstream; values stay in a narrow range so
     /// the first forward pass doesn't explode at high inDim (our D =
-    /// 782 input dim makes zero-init unusable — the hidden layer
+    /// 784 input dim makes zero-init unusable — the hidden layer
     /// would dead-ReLU on iteration one).
     ///
     /// Deterministic xorshift seeded per layer (1 and 2) so two
