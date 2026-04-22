@@ -104,10 +104,12 @@ final class ClassifierEngine: ObservableObject {
         }
 
         fileprivate static func countsBreakdown(_ counts: [Int]) -> String {
-            let labels = ["1", "2", "3", "4", "5"]
-            let parts = zip(labels, counts)
-                .filter { $0.1 > 0 }
-                .map { "\($0.0): \($0.1)" }
+            // Derive labels from count length so a single helper works
+            // for any numClasses. Pre-0.8.0 this hardcoded 5 labels
+            // and crashed silently when the classifier shrunk.
+            let parts = counts.enumerated()
+                .filter { $0.element > 0 }
+                .map { "\($0.offset + 1): \($0.element)" }
             return parts.isEmpty ? "none" : parts.joined(separator: ", ")
         }
     }

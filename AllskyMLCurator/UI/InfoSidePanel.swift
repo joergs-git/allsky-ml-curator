@@ -308,7 +308,14 @@ struct InfoSidePanel: View {
     /// green (correct predictions), off-diagonal shade red (confusion),
     /// intensity scaled by count. Axis labels mirror the tier colours.
     private func confusionMatrixView(_ matrix: [Int]) -> some View {
-        let K = 5
+        // 0.8.0 change: derive K from the matrix length instead of
+        // hardcoding it. Was `K = 5` which crashed with index-out-
+        // of-range the moment the 3-class classifier wrote a 9-
+        // element matrix into the summary but the grid kept trying
+        // to index 25 cells. sqrt + rounded guards against zero-
+        // length matrices while the classifier is still untrained.
+        let sqrtK = Int(Double(matrix.count).squareRoot().rounded())
+        let K = max(1, sqrtK)
         let maxValue = max(1, matrix.max() ?? 1)
         return VStack(alignment: .leading, spacing: 4) {
             Text("CONFUSION (true → predicted)")
@@ -712,10 +719,12 @@ struct InfoSidePanel: View {
     }
 
     private func classCountsBreakdown(_ counts: [Int]) -> String {
-        let labels = ["1", "2", "3", "4", "5"]
-        let parts = zip(labels, counts)
-            .filter { $0.1 > 0 }
-            .map { "\($0.0): \($0.1)" }
+        // Derive labels from count length so the same helper works
+        // for the 0.7.x 5-class layout *and* the 0.8.0 3-class one,
+        // without ever indexing past the array's end.
+        let parts = counts.enumerated()
+            .filter { $0.element > 0 }
+            .map { "\($0.offset + 1): \($0.element)" }
         return parts.isEmpty ? "none" : parts.joined(separator: ", ")
     }
 
@@ -773,14 +782,13 @@ struct InfoSidePanel: View {
             } else if present < 4, coverage.totalRated > 200 {
                 result.append(AnalysisTip(
                     title: "Class spread is narrow",
-                    body: "Only \(present) of 5 classes are represented. Aim for ≥ 30 samples in every class — especially 1 (full clouds) and 5 (clear) which are usually the rare ones."
+                    body: "Only \(present) of \(coverage.classCounts.count) classes are represented. Aim for ≥ 30 samples in every class — especially 1 (unsuitable) and 3 (suitable) which are usually the extremes."
                 ))
             }
             if coverage.totalRated >= 100 {
-                let labels = ["1", "2", "3", "4", "5"]
-                let smallClasses = zip(labels, coverage.classCounts)
-                    .filter { $0.1 > 0 && $0.1 < 30 }
-                    .map { "\($0.0) (\($0.1))" }
+                let smallClasses = coverage.classCounts.enumerated()
+                    .filter { $0.element > 0 && $0.element < 30 }
+                    .map { "\($0.offset + 1) (\($0.element))" }
                     .joined(separator: ", ")
                 if !smallClasses.isEmpty, present >= 2 {
                     result.append(AnalysisTip(

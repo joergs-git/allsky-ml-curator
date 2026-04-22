@@ -4,6 +4,22 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.8.1] — 2026-04-22
+
+### Fixed
+- **Crash during training** — `InfoSidePanel.confusionMatrixView`
+  hardcoded `K = 5` for the grid loop, so when the 0.8.0 3-class
+  classifier wrote a 9-element (3×3) confusion matrix into the
+  summary, the view tried to index `matrix[row * 5 + col]` and hit
+  index-out-of-range on the first off-diagonal cell. Now derives K
+  from `sqrt(matrix.count)` so the same view works for any
+  numClasses. Crashed on every ⌘T since 0.8.0.
+- Same hardcoded-5 assumption in two other helpers:
+  `InfoSidePanel.classCountsBreakdown` and
+  `ClassifierEngine.TrainingError.countsBreakdown` — both swapped
+  to `counts.enumerated()` so the label comes from the array
+  position, not a parallel fixed-length string array.
+
 ## [0.8.0] — 2026-04-22
 
 **RatingClass collapsed from 5 to 3 values.** The 5-class
