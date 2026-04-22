@@ -4,6 +4,41 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.7.4] — 2026-04-22
+
+RatingClass is totally ordered (cloudiness is monotonic), but
+every metric so far treated misclassifications as binary
+equal-weight. A 5 → 4 slip and a 5 → 1 flip counted the same.
+This release scores errors by ordinal distance so adjacent misses
+barely move the needle and extreme flips are punished hard.
+
+### Added
+- **`RatingClass.distance(to:)`** — `abs(a.rawValue − b.rawValue)`
+  for rated classes, 0 otherwise. Single source of truth for every
+  distance-aware metric.
+- **Distance-aware mismatch borders** on matrix tiles: amber
+  (distance 1, likely label-boundary noise) → orange (2) → deep
+  orange (3) → red (4, extreme flip). The curator can triage
+  severity from the matrix at a glance without opening Inspection.
+- **Mean Absolute Error column** (`MAE`) in the sweep results
+  table. Computed from the CV confusion matrix as
+  `Σ|true − pred| × count / totalSamples`. 0.3–0.5 is typical for
+  a well-tuned 5-class ordinal classifier at our data scale.
+- **`ClassifierEngine.meanAbsError(confusion:numClasses:)`** — pure
+  nonisolated static helper so the sweep can compute MAE off the
+  main actor alongside the existing confusion bookkeeping.
+
+### Changed
+- **Composite score switched to distance-aware**: `1 − MAE / 4`.
+  Previous scores (`CV − 0.5 × leak rate`) are not comparable to
+  the new ones; typical good-model scores now land in the 0.85–0.95
+  range instead of 0.70–0.75. Ranking inside a sweep is still
+  consistent, just with a different absolute scale.
+- Sweep results table + Copy-to-clipboard markdown both now include
+  the MAE column.
+- Sweep help section updated to explain the distance-aware
+  rationale and column semantics.
+
 ## [0.7.3] — 2026-04-22
 
 ### Changed

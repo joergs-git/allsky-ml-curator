@@ -48,6 +48,17 @@ enum RatingClass: Int, Codable, CaseIterable, Sendable {
         default:            return false
         }
     }
+
+    /// Ordinal distance from another class — 0 when identical, 4 at
+    /// the extremes (full-clouds ↔ clear). RatingClass is a totally
+    /// ordered cloudiness scale, so `|a.rawValue − b.rawValue|` is
+    /// the natural magnitude of a classification error. `.unrated`
+    /// (0) falls outside the ordinal axis and returns 0 — callers
+    /// should gate on `isRated` before invoking `distance`.
+    func distance(to other: RatingClass) -> Int {
+        guard rawValue > 0, other.rawValue > 0 else { return 0 }
+        return abs(rawValue - other.rawValue)
+    }
 }
 
 /// Label provenance. Distinguishes pure human labels from provisional

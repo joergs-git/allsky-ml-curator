@@ -44,12 +44,35 @@ struct MatrixTileCell: View {
     /// True when this tile is rated AND the classifier disagrees with
     /// the human label. Used by the label-audit workflow to visually
     /// pick out frames where either the model is wrong or the label
-    /// might be. Surfaced as a dashed red border + a class-number
-    /// badge so the curator can spot the mismatch without opening
-    /// Inspection on every single tile.
+    /// might be.
     private var isMismatch: Bool {
-        guard isRated, let prediction else { return false }
-        return prediction.topClass != ratingClass
+        mismatchDistance > 0
+    }
+
+    /// Ordinal distance between rating and prediction (0…4). 0 when
+    /// they match or when the tile isn't rated / hasn't been
+    /// predicted yet; 1 for adjacent-class disagreements (5 ↔ 4),
+    /// 4 for worst-case flips (5 ↔ 1). Drives the border colour so
+    /// the eye can triage "minor slip" vs "serious miss" at a
+    /// glance, without opening Inspection.
+    private var mismatchDistance: Int {
+        guard isRated, let prediction else { return 0 }
+        return ratingClass.distance(to: prediction.topClass)
+    }
+
+    /// Colour for the dashed mismatch border. Scaled on the ordinal
+    /// distance:
+    ///   1 (adjacent) → amber — probably label-boundary noise
+    ///   2            → orange — meaningful disagreement
+    ///   3            → deep orange — model or label clearly wrong
+    ///   4 (extreme)  → red — flipping class-5 ↔ class-1 is serious
+    private var mismatchBorderColor: Color {
+        switch mismatchDistance {
+        case 1:  return Color(red: 0.98, green: 0.80, blue: 0.20)  // amber
+        case 2:  return Color.orange
+        case 3:  return Color(red: 0.95, green: 0.40, blue: 0.10)  // deep orange
+        default: return Color(red: 0.95, green: 0.20, blue: 0.20)  // red
+        }
     }
 
     /// Combined "is the moon likely visible and bright enough to
@@ -174,14 +197,13 @@ struct MatrixTileCell: View {
             if isMismatch {
                 // Dashed warning outline painted *inside* any
                 // selection / cursor ring so a selected mismatch
-                // still reads as selected first. Colour is a deep
-                // warning orange that stays legible on both the
-                // light and dark band colours of tier 1 (red) and
-                // tier 5 (green) — a pure red border would disappear
-                // on class-1 tiles, a pure yellow one on class-4.
+                // still reads as selected first. Colour is now
+                // distance-aware (amber / orange / deep-orange /
+                // red) so the eye can triage a "5 vs 4 slip" from
+                // a "5 vs 1 flip" at a glance — 0.7.4 change.
                 Rectangle()
                     .strokeBorder(
-                        Color.orange.opacity(0.95),
+                        mismatchBorderColor.opacity(0.95),
                         style: StrokeStyle(
                             lineWidth: 2.5,
                             dash: [5, 3]

@@ -119,8 +119,8 @@ struct HyperparamSweepView: View {
             )
             lines.append("")
         }
-        lines.append("| config | CV | cls-5 recall | 5→1 | 5→4 | cls-1 P | score |")
-        lines.append("|---|---|---|---|---|---|---|")
+        lines.append("| config | CV | cls-5 R | 5→1 | 5→4 | cls-1 P | MAE | score |")
+        lines.append("|---|---|---|---|---|---|---|---|")
         for r in ranked {
             let isWinner = r.id == winnerId
             let bold = isWinner ? "**" : ""
@@ -138,6 +138,7 @@ struct HyperparamSweepView: View {
                 + " | \(leak(r.class5ToClass1Count, r.class5ToClass1Pct))"
                 + " | \(leak(r.class5ToClass4Count, r.class5ToClass4Pct))"
                 + " | \(String(format: "%.1f %%", r.class1Precision * 100))"
+                + " | \(String(format: "%.2f", r.meanAbsError))"
                 + " | \(scoreCell) |"
             )
         }
@@ -189,7 +190,7 @@ struct HyperparamSweepView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("What this does")
                 .font(.headline)
-            Text("Trains the classifier 12 times with different hyperparameters and per-sample feature scalings, then ranks them by a composite score: CV accuracy *minus* 0.5 × the class-5 → {1, 4} leak rate. The leak rate penalty targets the moon-glow misclassification pattern the 0.5.x audit flagged. Each fit runs ~5 s on a Release build, so the full sweep takes about a minute.")
+            Text("Trains the classifier 12 times with different hyperparameters and per-sample feature scalings, then ranks them by a distance-aware composite score: **1 − MAE / 4**, where MAE is the mean absolute error in class-index units over the 5-fold CV confusion matrix. RatingClass is totally ordered (cloudiness is monotonic), so a 5 → 4 slip is scored much gentler than a 5 → 1 flip — 0.7.4 change from the prior binary-miss penalty. Each fit runs ~5 s on a Release build, so the full sweep takes about a minute.")
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
             Text("Applies only to the current filter slice — e.g. if Night-only mode is on, the sweep trains on night frames and the winning config is the best for that slice.")
@@ -217,16 +218,17 @@ struct HyperparamSweepView: View {
                 title: "What the column headers mean",
                 body: """
 CV = 5-fold cross-validation accuracy (honest generalisation estimate).
-cls-5 recall = fraction of truly clear frames correctly predicted clear.
-5→1 = clear frames wrongly predicted as full cloud.
-5→4 = clear frames wrongly predicted as thin cloud (the moon-glow case).
+cls-5 R = recall on truly clear frames — fraction correctly kept as clear.
+5→1 = clear frames flipped to full clouds (worst-case leak: distance = 4).
+5→4 = clear frames slipped to thin clouds (minor leak: distance = 1).
 cls-1 P = precision on full-cloud predictions (when the model says "1", how often is it right).
-score = composite = CV − 0.5 × (5→1 % + 5→4 %). Higher is better.
+MAE = mean absolute error in class-index units, averaged over every CV prediction. 0 = perfect, 4 = worst possible. ~0.3–0.5 is a well-tuned ordinal classifier at our data scale.
+score = 1 − MAE / 4. Distance-aware composite; higher is better.
 """
             )
             helpBlock(
-                title: "What the composite score penalises",
-                body: "Pure accuracy hides class-specific failures — a model that predicts 'class 1 for everything' would hit 38 % accuracy on Rheine's data without actually learning. The 0.5 × leak rate penalty enforces 'the clear-sky class has to work'. Weighting is tuned so a 5 percentage-point accuracy gain doesn't justify a 10-point jump in the leak rate."
+                title: "Why the score is distance-aware (0.7.4 change)",
+                body: "The earlier composite (`CV − 0.5 × leak rate`) treated every mismatch equally: a 5 → 4 slip and a 5 → 1 flip both counted as one 'wrong'. But cloudiness is ordinal — mistaking 'clear' for 'thin cloud' is a much smaller downstream problem than mistaking it for 'full clouds'. The new composite uses ordinal distance (|predicted − actual|) so adjacent misses barely move the score and extreme flips are punished hard. Same goes for the matrix tile borders — amber for distance 1, orange for 2, deep-orange for 3, red for the 4-away worst case."
             )
             helpBlock(
                 title: "What the 12 configs probe",
@@ -305,14 +307,15 @@ Plus a baseline (your current Preferences) and a kitchen-sink "aggro" config tha
                 GridRow {
                     columnHeader("config")
                     columnHeader("CV")
-                    columnHeader("cls-5 recall")
+                    columnHeader("cls-5 R")
                     columnHeader("5→1")
                     columnHeader("5→4")
                     columnHeader("cls-1 P")
+                    columnHeader("MAE")
                     columnHeader("score")
                     columnHeader("")
                 }
-                Divider().gridCellColumns(8)
+                Divider().gridCellColumns(9)
                 ForEach(ranked) { r in
                     let isWinner = r.id == ranked.first?.id
                     GridRow {
@@ -324,6 +327,9 @@ Plus a baseline (your current Preferences) and a kitchen-sink "aggro" config tha
                         leakCell(r.class5ToClass1Count, r.class5ToClass1Pct)
                         leakCell(r.class5ToClass4Count, r.class5ToClass4Pct)
                         pctCell(r.class1Precision)
+                        Text(String(format: "%.2f", r.meanAbsError))
+                            .font(.callout.monospacedDigit())
+                            .foregroundStyle(r.meanAbsError > 0.6 ? .red : (r.meanAbsError > 0.3 ? .orange : .primary))
                         Text(String(format: "%.3f", r.compositeScore))
                             .font(.callout.monospacedDigit())
                             .fontWeight(isWinner ? .bold : .regular)

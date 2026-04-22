@@ -267,13 +267,44 @@ final class ClassifierEngine: ObservableObject {
         var class1Precision: Float
         var durationSeconds: Double
         var sampleCount: Int
+        /// Mean absolute error in class-index units, computed over
+        /// the CV confusion matrix. 0 = perfect predictions; 4 =
+        /// every prediction flipped class-5 ↔ class-1. 0.7.4 addition
+        /// — the earlier composite score treated all disagreements
+        /// as equal, but RatingClass is totally ordered (cloudiness
+        /// is monotonic), so an adjacent miss (5 → 4) is much less
+        /// bad than an extreme flip (5 → 1) and should score
+        /// accordingly.
+        var meanAbsError: Float
 
-        /// Composite target — higher is better. Rewards overall
-        /// accuracy, penalises class-5 → {1, 4} leaks which are the
-        /// moon-glow symptoms the 0.5.x audit flagged.
+        /// Composite target — higher is better, on [0, 1]. Uses the
+        /// ordinal distance penalty instead of the old binary-miss
+        /// penalty so a model that slips 5 → 4 is rewarded over one
+        /// that flips 5 → 1 at the same overall accuracy. Simple
+        /// form: `1 − MAE / 4`. A perfect model scores 1.0; random
+        /// 5-class guessing scores ~0.5.
         var compositeScore: Float {
-            cvAccuracy - 0.5 * (class5ToClass1Pct + class5ToClass4Pct)
+            max(0, 1 - meanAbsError / 4)
         }
+    }
+
+    /// Mean absolute error over a 5×5 row-major confusion matrix.
+    /// Treats class indices as ordinal; `.unrated` never appears so
+    /// raw values 1…5 map to indices 0…4 inside the matrix.
+    nonisolated static func meanAbsError(
+        confusion: [Int], numClasses K: Int
+    ) -> Float {
+        var totalError = 0
+        var totalSamples = 0
+        for trueIdx in 0..<K {
+            for predIdx in 0..<K {
+                let count = confusion[trueIdx * K + predIdx]
+                totalError += abs(trueIdx - predIdx) * count
+                totalSamples += count
+            }
+        }
+        guard totalSamples > 0 else { return 0 }
+        return Float(totalError) / Float(totalSamples)
     }
 
     /// Live sweep state surfaced to the UI. `@Published` so a
@@ -423,6 +454,8 @@ final class ClassifierEngine: ObservableObject {
                 ? Float(c1Correct) / Float(col1Sum)
                 : 0
 
+            let mae = Self.meanAbsError(confusion: confusion, numClasses: kSnap)
+
             out.append(
                 SweepResult(
                     configName: config.name,
@@ -438,7 +471,8 @@ final class ClassifierEngine: ObservableObject {
                     class1Recall: Float(c1Correct) / Float(c1Support),
                     class1Precision: c1Precision,
                     durationSeconds: duration,
-                    sampleCount: scaledSamples.count
+                    sampleCount: scaledSamples.count,
+                    meanAbsError: mae
                 )
             )
         }
