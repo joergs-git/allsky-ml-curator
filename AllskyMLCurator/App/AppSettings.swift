@@ -364,6 +364,38 @@ final class AppSettings {
         set { defaults.set(newValue, forKey: Key.featureReflectionScale) }
     }
 
+    /// Enable the seasonal aux features (sin/cos of day-of-year,
+    /// indices 784/785 in the 0.7+ feature vector). Defaults ON —
+    /// seasonal light pollution, humidity, and twilight-duration
+    /// patterns are strong priors at fixed observatories. Turn off
+    /// to A/B against a season-agnostic classifier if the site is
+    /// moving or the season index is dragging the model.
+    var featureSeasonEnabled: Bool {
+        get { defaults.bool(forKey: Key.featureSeasonEnabled, default: true) }
+        set { defaults.set(newValue, forKey: Key.featureSeasonEnabled) }
+    }
+
+    /// Enable the exposure + gain aux features (indices 786/787).
+    /// Defaults ON. When a camera runs in fixed-exposure mode these
+    /// features are effectively constant and can be turned off to
+    /// reduce noise.
+    var featureExposureGainEnabled: Bool {
+        get { defaults.bool(forKey: Key.featureExposureGainEnabled, default: true) }
+        set { defaults.set(newValue, forKey: Key.featureExposureGainEnabled) }
+    }
+
+    /// Enable the image-variance aux features (indices 788/789 —
+    /// `has_variance` + `variance_norm`). Defaults ON. The texture
+    /// scalar separates smooth moon-glow gradients from structured
+    /// cloud content, which is the residual failure mode after the
+    /// geometric reflection boost. Turn off to A/B — it requires
+    /// decoding each thumbnail once, so on a cold cache the first
+    /// train after a relaunch costs ~5-10 s extra.
+    var featureVarianceEnabled: Bool {
+        get { defaults.bool(forKey: Key.featureVarianceEnabled, default: true) }
+        set { defaults.set(newValue, forKey: Key.featureVarianceEnabled) }
+    }
+
     /// Width of the MLP hidden layer. 128 is the 0.5.0 default —
     /// large enough to learn the non-linear "bright cloudy at day"
     /// vs "clear at day" split in Vision FeaturePrint space, small
@@ -498,6 +530,9 @@ final class AppSettings {
         static let featureMoonScale = "feature.moonVisibilityScale"
         static let featureSunScale = "feature.sunVisibilityScale"
         static let featureReflectionScale = "feature.reflectionRiskScale"
+        static let featureSeasonEnabled = "feature.seasonEnabled"
+        static let featureExposureGainEnabled = "feature.exposureGainEnabled"
+        static let featureVarianceEnabled = "feature.varianceEnabled"
         static let nightMode = "appearance.nightMode"
     }
 }
@@ -512,5 +547,9 @@ private extension UserDefaults {
 
     func integer(forKey key: String, default defaultValue: Int) -> Int {
         object(forKey: key) == nil ? defaultValue : integer(forKey: key)
+    }
+
+    func bool(forKey key: String, default defaultValue: Bool) -> Bool {
+        object(forKey: key) == nil ? defaultValue : bool(forKey: key)
     }
 }

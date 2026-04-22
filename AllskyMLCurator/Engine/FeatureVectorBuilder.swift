@@ -23,8 +23,14 @@ import Foundation
 /// [781]        mb_seeing_norm          ((seeing_arcsec - 1) / 5, clamped)
 /// [782]        moon_visibility         = moon_phase × max(0, sin(moon_alt)) — 0.5.6
 /// [783]        sun_visibility          = max(0, sin(sun_alt))                — 0.5.6
+/// [784]        season_sin              = sin(2π × day_of_year / 365)         — 0.7.0
+/// [785]        season_cos              = cos(2π × day_of_year / 365)         — 0.7.0
+/// [786]        exposure_norm           = clamp(exposure_sec / 120, 0…1)       — 0.7.0
+/// [787]        gain_norm               = clamp(gain / 500, 0…1)               — 0.7.0
+/// [788]        has_sky_variance        (0 or 1)                              — 0.7.0
+/// [789]        sky_variance_norm       (thumbnail luminance std-dev / 128)    — 0.7.0
 /// ```
-/// Total: 784 features.
+/// Total: 790 features.
 ///
 /// Why the two visibility interactions (0.5.6): the linear classifier
 /// head can represent `a × b` as a single weight on the interaction
@@ -51,7 +57,7 @@ enum FeatureVectorBuilder {
 
     /// Aux-only slice length. Embedding length is appended on top by
     /// the embedding pipeline and known per revision at runtime.
-    static let auxCount = 16
+    static let auxCount = 22
 
     /// Build the full feature vector for one image. Returns `nil`
     /// when either the cached embedding or the basic ImageRecord
@@ -117,6 +123,60 @@ enum FeatureVectorBuilder {
         let moonScale = Float(AppSettings.shared.featureMoonVisibilityScale)
         let sunScale = Float(AppSettings.shared.featureSunVisibilityScale)
 
+        // 0.7.0 aux block — togglable via AppSettings. Each group
+        // has its own bool; when off the corresponding features emit
+        // zero so the classifier can still consume the vector but
+        // the gradient for those dims decays to zero. Feature vector
+        // shape stays constant regardless of toggle state, so the
+        // persisted CMLW v2 blob isn't invalidated by a pure toggle
+        // flip — only by a code change that adds / removes a slot.
+        let seasonOn = AppSettings.shared.featureSeasonEnabled
+        let expGainOn = AppSettings.shared.featureExposureGainEnabled
+        let varianceOn = AppSettings.shared.featureVarianceEnabled
+
+        // Day-of-year cyclic encoding. captureUtc is UTC so the
+        // phase offset is a constant shift, not an issue for the
+        // classifier. 365.25 to accommodate leap years without
+        // introducing a step discontinuity between Dec 31 and Jan 1.
+        let seasonSin: Float
+        let seasonCos: Float
+        if seasonOn {
+            let cal = Calendar(identifier: .gregorian)
+            let doy = cal.ordinality(
+                of: .day, in: .year, for: image.captureUtc
+            ) ?? 1
+            let phase = 2.0 * .pi * Double(doy) / 365.25
+            seasonSin = Float(sin(phase))
+            seasonCos = Float(cos(phase))
+        } else {
+            seasonSin = 0
+            seasonCos = 0
+        }
+
+        // Exposure + gain normalisation — generous upper bounds so
+        // unusually long / high-gain captures still sit inside [0, 1]
+        // without being clamped into a flat top.
+        let exposureNorm: Float = expGainOn
+            ? Float(max(0.0, min(1.0, (image.exposureSec ?? 0) / 120.0)))
+            : 0
+        let gainNorm: Float = expGainOn
+            ? Float(max(0.0, min(1.0, (image.gain ?? 0) / 500.0)))
+            : 0
+
+        // Image-variance scalar pulled from the thumbnail cache. Nil
+        // when the thumbnail isn't on disk yet (we emit
+        // has_variance = 0 + variance = 0 so the classifier can
+        // route those rows through a different weight). Turning the
+        // group off sets both features to 0.
+        let varianceValue: Float? = varianceOn
+            ? SkyVarianceCache.shared.value(
+                for: image.filePath,
+                cameraType: image.cameraSource.cameraType
+            )
+            : nil
+        let hasVariance: Float = (varianceOn && varianceValue != nil) ? 1 : 0
+        let varianceNorm: Float = varianceValue ?? 0
+
         return [
             Float(image.sunAltDeg / 90.0),
             Float(sin(sunAzRad)),
@@ -133,7 +193,13 @@ enum FeatureVectorBuilder {
             cloudNorm,
             seeingNorm,
             moonVisibility * moonScale,
-            sunVisibility * sunScale
+            sunVisibility * sunScale,
+            seasonSin,
+            seasonCos,
+            exposureNorm,
+            gainNorm,
+            hasVariance,
+            varianceNorm
         ]
     }
 

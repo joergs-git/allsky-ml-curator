@@ -4,6 +4,26 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.7.0] — 2026-04-22
+
+Feature-vector expansion — three new aux-feature groups designed to
+attack the residual failure modes the 0.6.x autopilot sweep hit a
+ceiling on. Vector dim 784 → 790, all groups individually toggleable.
+
+### Added
+- **Seasonal encoding (indices 784, 785)** — `sin / cos(2π × day_of_year / 365.25)`. Captures the site's seasonal light / humidity / twilight-duration patterns without committing to a calendar shift at year boundary.
+- **Exposure + gain (786, 787)** — `clamp(exposure_sec / 120, 0…1)` and `clamp(gain / 500, 0…1)`. Normalises frame brightness so the classifier can separate "bright because long exposure" from "bright because cloudy".
+- **Image-texture variance (788, 789)** — `has_sky_variance` flag + luminance std-dev normalised by 128. Computed from the already-zenith-cropped HEIC thumbnail via `SkyVarianceCache`, cached in-process on first read. Smooth moon glow → low variance; structured cloud → high variance. The residual class-5 ↔ class-4 confusion after the 0.6.x autopilot was visually "gradient smoothness" — this gives the classifier that signal directly without needing to derive it from the 768-dim Vision embedding.
+- **Preferences → Training → "Feature groups (on / off)"** — three toggles (Seasonal, Exposure + gain, Sky texture). When off, the corresponding feature dims emit zero; vector shape stays constant so toggling doesn't invalidate the persisted classifier, but a retrain is needed to re-learn the weights that were previously zeroed.
+- **`SkyVarianceCache`** — thread-safe singleton, in-memory only, lazily populates from the thumbnail cache. Cold-cache training cost: ~5-10 s extra on a 14 k-sample library; subsequent trains / sweeps hit the cache. Drops on thumbnail rebuild (variance no longer matches the on-disk HEIC then).
+
+### Required action
+Existing `CMLW v2` classifier blobs are rejected on launch because the featureDim in the stored header (784) no longer matches the runtime vector (790). The app falls back to "untrained"; hit ⌘T once to retrain on the 790-dim vector. If you were using autopilot-tuned settings (moon×50 etc.) they persist through the bump — only the model weights are re-learnt.
+
+### Deferred
+- **CloudWatcher `sky_quality_raw`** — already fetched from Supabase but not stored on `ImageRecord`. Adding it as a feature needs a migration + ingest-time denormalisation. Target: 0.7.1.
+- **Previous-frame prior** — strong signal (clouds don't teleport) but needs a temporal join during feature build. Target: 0.8.
+
 ## [0.6.3] — 2026-04-22
 
 ### Added

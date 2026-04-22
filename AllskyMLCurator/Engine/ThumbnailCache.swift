@@ -330,6 +330,14 @@ final class ThumbnailCache: @unchecked Sendable {
             .appendingPathExtension("heic")
     }
 
+    /// Public wrapper for callers that need the on-disk path of the
+    /// cached thumbnail (e.g. `SkyVarianceCache` reads it back to
+    /// compute luminance stats without re-decoding the original
+    /// full-resolution JPEG).
+    func thumbnailURL(for imagePath: String, cameraType: CameraType) -> URL {
+        diskURL(for: imagePath, cameraType: cameraType)
+    }
+
     // MARK: - State
 
     private let memoryCache = NSCache<NSString, NSImage>()

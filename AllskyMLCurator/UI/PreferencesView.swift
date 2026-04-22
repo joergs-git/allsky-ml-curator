@@ -48,6 +48,9 @@ struct PreferencesView: View {
     @State private var featureMoonScale: Double = AppSettings.shared.featureMoonVisibilityScale
     @State private var featureSunScale: Double = AppSettings.shared.featureSunVisibilityScale
     @State private var featureReflectionScale: Double = AppSettings.shared.featureReflectionRiskScale
+    @State private var featureSeasonEnabled: Bool = AppSettings.shared.featureSeasonEnabled
+    @State private var featureExposureGainEnabled: Bool = AppSettings.shared.featureExposureGainEnabled
+    @State private var featureVarianceEnabled: Bool = AppSettings.shared.featureVarianceEnabled
 
     // MARK: - Advanced tab state
 
@@ -373,6 +376,28 @@ struct PreferencesView: View {
                 ) { new in AppSettings.shared.sunAltitudeProblemThresholdDeg = new }
 
                 Text("Bottom-left badges on each tile only show when the respective body is **at or above** its altitude threshold. Below, the body either sits behind the horizon mask or is too low to cause real lens flare. Defaults: moon 30° (Rheine-site empirical), sun 10° (bright enough to create strong fisheye reflections). Adjust for different sites / camera bodies.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Section("Feature groups (on/off)") {
+                Toggle("Seasonal (day-of-year sin/cos)", isOn: $featureSeasonEnabled)
+                    .onChange(of: featureSeasonEnabled) { _, new in
+                        AppSettings.shared.featureSeasonEnabled = new
+                    }
+
+                Toggle("Exposure + gain", isOn: $featureExposureGainEnabled)
+                    .onChange(of: featureExposureGainEnabled) { _, new in
+                        AppSettings.shared.featureExposureGainEnabled = new
+                    }
+
+                Toggle("Sky texture (thumbnail luminance std-dev)", isOn: $featureVarianceEnabled)
+                    .onChange(of: featureVarianceEnabled) { _, new in
+                        AppSettings.shared.featureVarianceEnabled = new
+                    }
+
+                Text("When a group is **off**, those aux slots emit zero — the vector shape stays 790-dim, so the persisted classifier isn't invalidated by a pure toggle flip, but the model will slowly zero out the weights that touched the flipped-off dims. Re-enabling requires a retrain (⌘T) to re-learn those weights. Each toggle's effect is visible in the next sweep / train — no relaunch needed.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
