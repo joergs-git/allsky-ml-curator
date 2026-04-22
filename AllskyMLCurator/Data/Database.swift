@@ -210,6 +210,24 @@ final class Database {
             }
         }
 
+        // CloudWatcher SQM (Sky Quality Meter) reading. Same
+        // denormalisation rationale as the sky-temp column — the
+        // 0.7.1 classifier uses it as a direct sky-brightness aux
+        // feature, so a join-per-train would be a regression. The
+        // value is the raw count the sensor reports (higher =
+        // darker at night, lower = brighter = light-polluted or
+        // cloud-scattering city lights back down). Nullable for
+        // frames ingested before this column existed; the backfill
+        // pass at launch repopulates them from Supabase.
+        migrator.registerMigration("v7_add_cloudwatcher_sky_quality") { db in
+            let existing = Set((try? db.columns(in: "images"))?.map(\.name) ?? [])
+            try db.alter(table: "images") { t in
+                if !existing.contains("cloudwatcherSkyQualityRaw") {
+                    t.add(column: "cloudwatcherSkyQualityRaw", .integer)
+                }
+            }
+        }
+
         return migrator
     }
 }

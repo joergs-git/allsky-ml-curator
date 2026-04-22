@@ -4,6 +4,27 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.7.1] — 2026-04-22
+
+### Added
+- **CloudWatcher SQM aux feature (indices 790, 791)** — denormalised
+  `sky_quality_raw` on `ImageRecord` via migration `v7_add_cloudwatcher_sky_quality`. Ingest pipeline populates it when a cloudwatcher reading pair is found, identical flow to the existing `cloudwatcherSkyTempC`. Feature layout: `has_sqm` flag + `sqm_raw / 15000` normalised value. Higher raw = darker sky; city-light scatter under cloud drops it. Direct sky-brightness prior the Vision embedding can't replicate.
+- **`featureSkyQualityEnabled` toggle** in Preferences → Training →
+  Feature groups. Off during early rollout if existing library has
+  mostly nil `sky_quality_raw` values and you want the model to
+  ignore the feature until backfill coverage improves.
+
+### Deferred
+- **Backfill button** for existing rows with NULL sky_quality_raw —
+  would walk `images` where `supabaseReadingId` is set and SQM is
+  missing, batch-fetch from Supabase. Left as a 0.7.2 TODO to keep
+  this change focused; for now new ingests get the column, older
+  rows emit `has_sqm = 0` in the feature vector.
+
+### Required action
+Feature vector grows 790 → 792. Existing `CMLW v2` blobs rejected on
+launch; hit ⌘T to retrain. Autopilot-tuned scales persist.
+
 ## [0.7.0] — 2026-04-22
 
 Feature-vector expansion — three new aux-feature groups designed to

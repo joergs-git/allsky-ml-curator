@@ -396,6 +396,17 @@ final class AppSettings {
         set { defaults.set(newValue, forKey: Key.featureVarianceEnabled) }
     }
 
+    /// Enable the CloudWatcher SQM aux features (indices 790/791).
+    /// Defaults ON. Turning off is mainly useful when `sky_quality_raw`
+    /// ingest coverage is spotty on the current library — a huge
+    /// has_sqm=0 population drags the weights that touched those
+    /// dims toward zero and effectively teaches the model to ignore
+    /// the signal, which isn't what we want once backfill is done.
+    var featureSkyQualityEnabled: Bool {
+        get { defaults.bool(forKey: Key.featureSkyQualityEnabled, default: true) }
+        set { defaults.set(newValue, forKey: Key.featureSkyQualityEnabled) }
+    }
+
     /// Width of the MLP hidden layer. 128 is the 0.5.0 default —
     /// large enough to learn the non-linear "bright cloudy at day"
     /// vs "clear at day" split in Vision FeaturePrint space, small
@@ -533,6 +544,7 @@ final class AppSettings {
         static let featureSeasonEnabled = "feature.seasonEnabled"
         static let featureExposureGainEnabled = "feature.exposureGainEnabled"
         static let featureVarianceEnabled = "feature.varianceEnabled"
+        static let featureSkyQualityEnabled = "feature.skyQualityEnabled"
         static let nightMode = "appearance.nightMode"
     }
 }

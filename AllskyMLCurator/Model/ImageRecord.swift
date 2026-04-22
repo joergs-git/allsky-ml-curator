@@ -48,6 +48,14 @@ struct ImageRecord: Codable, Identifiable, Equatable, Sendable {
     /// can show live context without a separate Supabase lookup.
     var cloudwatcherSkyTempC: Double?
 
+    /// Raw SQM (Sky Quality Meter) count from the matched cloudwatcher
+    /// reading. Higher values = darker sky, lower values = brighter
+    /// (light pollution or clouds scattering city lights back down).
+    /// Denormalised for training-time access without a Supabase join.
+    /// Nullable — frames ingested before the 0.7.1 migration have NULL
+    /// until the launch-time backfill repopulates them.
+    var cloudwatcherSkyQualityRaw: Int?
+
     // MARK: - Ephemeris (sun / moon, body-agnostic)
 
     var sunAltDeg: Double
@@ -127,6 +135,7 @@ extension ImageRecord: FetchableRecord, MutablePersistableRecord {
         static let meteoblueTotalCloud   = Column(CodingKeys.meteoblueTotalCloud)
         static let meteoblueSeeingArcsec = Column(CodingKeys.meteoblueSeeingArcsec)
         static let cloudwatcherSkyTempC  = Column(CodingKeys.cloudwatcherSkyTempC)
+        static let cloudwatcherSkyQualityRaw = Column(CodingKeys.cloudwatcherSkyQualityRaw)
         static let sunAltDeg             = Column(CodingKeys.sunAltDeg)
         static let sunAzDeg              = Column(CodingKeys.sunAzDeg)
         static let moonAltDeg            = Column(CodingKeys.moonAltDeg)

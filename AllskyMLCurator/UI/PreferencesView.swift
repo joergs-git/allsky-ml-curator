@@ -51,6 +51,7 @@ struct PreferencesView: View {
     @State private var featureSeasonEnabled: Bool = AppSettings.shared.featureSeasonEnabled
     @State private var featureExposureGainEnabled: Bool = AppSettings.shared.featureExposureGainEnabled
     @State private var featureVarianceEnabled: Bool = AppSettings.shared.featureVarianceEnabled
+    @State private var featureSkyQualityEnabled: Bool = AppSettings.shared.featureSkyQualityEnabled
 
     // MARK: - Advanced tab state
 
@@ -397,7 +398,12 @@ struct PreferencesView: View {
                         AppSettings.shared.featureVarianceEnabled = new
                     }
 
-                Text("When a group is **off**, those aux slots emit zero — the vector shape stays 790-dim, so the persisted classifier isn't invalidated by a pure toggle flip, but the model will slowly zero out the weights that touched the flipped-off dims. Re-enabling requires a retrain (⌘T) to re-learn those weights. Each toggle's effect is visible in the next sweep / train — no relaunch needed.")
+                Toggle("CloudWatcher SQM (sky brightness)", isOn: $featureSkyQualityEnabled)
+                    .onChange(of: featureSkyQualityEnabled) { _, new in
+                        AppSettings.shared.featureSkyQualityEnabled = new
+                    }
+
+                Text("When a group is **off**, those aux slots emit zero — the vector shape stays 792-dim, so the persisted classifier isn't invalidated by a pure toggle flip, but the model will slowly zero out the weights that touched the flipped-off dims. Re-enabling requires a retrain (⌘T) to re-learn those weights. Each toggle's effect is visible in the next sweep / train — no relaunch needed.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

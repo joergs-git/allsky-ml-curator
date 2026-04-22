@@ -539,6 +539,7 @@ final class IngestService: ObservableObject {
             meteoblueTotalCloud: meteoblueHour?.totalcloud,
             meteoblueSeeingArcsec: meteoblueHour?.seeingArcsec,
             cloudwatcherSkyTempC: matchedReading?.skyTemperature,
+            cloudwatcherSkyQualityRaw: matchedReading?.skyQualityRaw,
             sunAltDeg: sun.horizontal.altitudeDeg,
             sunAzDeg: sun.horizontal.azimuthDeg,
             moonAltDeg: moon.horizontal.altitudeDeg,

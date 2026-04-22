@@ -29,8 +29,10 @@ import Foundation
 /// [787]        gain_norm               = clamp(gain / 500, 0…1)               — 0.7.0
 /// [788]        has_sky_variance        (0 or 1)                              — 0.7.0
 /// [789]        sky_variance_norm       (thumbnail luminance std-dev / 128)    — 0.7.0
+/// [790]        has_sqm                 (0 or 1)                              — 0.7.1
+/// [791]        sqm_norm                (clamp(sqm_raw / 15000, 0…1)) — higher = darker sky — 0.7.1
 /// ```
-/// Total: 790 features.
+/// Total: 792 features.
 ///
 /// Why the two visibility interactions (0.5.6): the linear classifier
 /// head can represent `a × b` as a single weight on the interaction
@@ -57,7 +59,7 @@ enum FeatureVectorBuilder {
 
     /// Aux-only slice length. Embedding length is appended on top by
     /// the embedding pipeline and known per revision at runtime.
-    static let auxCount = 22
+    static let auxCount = 24
 
     /// Build the full feature vector for one image. Returns `nil`
     /// when either the cached embedding or the basic ImageRecord
@@ -177,6 +179,20 @@ enum FeatureVectorBuilder {
         let hasVariance: Float = (varianceOn && varianceValue != nil) ? 1 : 0
         let varianceNorm: Float = varianceValue ?? 0
 
+        // CloudWatcher SQM — higher raw count = darker sky. Useful
+        // night-cloud prior: thick cloud scatters city lights back
+        // down and drives the SQM down, clear sky reads high. 15000
+        // is an empirical upper bound for the TSL237 cell at rural
+        // Bortle-4 sites. Gated by featureSkyQualityEnabled; has_sqm
+        // flag distinguishes "genuinely 0" from "no reading matched
+        // at ingest" rows.
+        let sqmOn = AppSettings.shared.featureSkyQualityEnabled
+        let sqmRaw = image.cloudwatcherSkyQualityRaw
+        let hasSqm: Float = (sqmOn && sqmRaw != nil) ? 1 : 0
+        let sqmNorm: Float = sqmOn && sqmRaw != nil
+            ? Float(max(0.0, min(1.0, Double(sqmRaw!) / 15000.0)))
+            : 0
+
         return [
             Float(image.sunAltDeg / 90.0),
             Float(sin(sunAzRad)),
@@ -199,7 +215,9 @@ enum FeatureVectorBuilder {
             exposureNorm,
             gainNorm,
             hasVariance,
-            varianceNorm
+            varianceNorm,
+            hasSqm,
+            sqmNorm
         ]
     }
 
