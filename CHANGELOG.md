@@ -4,6 +4,15 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.6.1] — 2026-04-22
+
+### Added
+- **Copy-to-clipboard button** in the sweep sheet header. Exports
+  the full ranked table as markdown (winner **bold**, leak cells
+  tagged 🟠 / 🔴 for >10 % / >25 % so the severity survives plain
+  text) and includes the exact settings the winner would apply.
+  Saves the round-trip through a screenshot when sharing results.
+
 ## [0.6.0] — 2026-04-22
 
 **ML hyperparameter autopilot**. First-class in-app sweep over

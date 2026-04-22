@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Sheet that drives a hyperparameter sweep over the current training
@@ -14,6 +15,7 @@ struct HyperparamSweepView: View {
     let onDismiss: () -> Void
 
     @State private var runTask: Task<Void, Never>?
+    @State private var copyFeedback: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -52,11 +54,108 @@ struct HyperparamSweepView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            if case let .finished(results) = classifier.sweepStatus {
+                copyButton(for: results)
+            }
             primaryButton
             Button("Close", action: onDismiss)
                 .keyboardShortcut(.escape)
         }
         .padding(12)
+    }
+
+    /// Copy the full ranked results table to the system pasteboard
+    /// as a markdown string. Saves the user from screenshotting the
+    /// whole sheet every time — the text round-trips cleanly into
+    /// chat / notes / github issues.
+    private func copyButton(for results: [ClassifierEngine.SweepResult]) -> some View {
+        Button {
+            let md = Self.markdownReport(results: results)
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(md, forType: .string)
+            copyFeedback = "Copied!"
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                copyFeedback = nil
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: copyFeedback == nil
+                      ? "doc.on.clipboard"
+                      : "checkmark")
+                Text(copyFeedback ?? "Copy")
+            }
+        }
+        .help("Copy the ranked results as a markdown table to the clipboard.")
+    }
+
+    /// Render the sweep result table as markdown — the exact shape I
+    /// want to paste into chat. Winner row is **bold**, leak cells
+    /// that would render red / orange in the UI get a warning emoji
+    /// tag so the severity survives plaintext.
+    static func markdownReport(
+        results: [ClassifierEngine.SweepResult]
+    ) -> String {
+        let ranked = results.sorted { $0.compositeScore > $1.compositeScore }
+        let winnerId = ranked.first?.id
+
+        var lines: [String] = []
+        lines.append("## Hyperparameter sweep — \(ranked.count) configs")
+        lines.append("")
+        if let first = ranked.first {
+            lines.append(
+                "Samples used: \(first.sampleCount) · "
+                + "Fit time total: "
+                + String(format: "%.1f s", results.map(\.durationSeconds).reduce(0, +))
+            )
+            lines.append("")
+        }
+        lines.append("| config | CV | cls-5 recall | 5→1 | 5→4 | cls-1 P | score |")
+        lines.append("|---|---|---|---|---|---|---|")
+        for r in ranked {
+            let isWinner = r.id == winnerId
+            let bold = isWinner ? "**" : ""
+            let nameCell = "\(bold)\(r.configName)\(bold)"
+            let scoreCell = "\(bold)\(String(format: "%.3f", r.compositeScore))\(bold)"
+            func leak(_ count: Int, _ pct: Float) -> String {
+                let p = String(format: "%.0f%%", pct * 100)
+                let marker = pct > 0.25 ? " 🔴" : (pct > 0.10 ? " 🟠" : "")
+                return "\(count) (\(p))\(marker)"
+            }
+            lines.append(
+                "| \(nameCell)"
+                + " | \(String(format: "%.1f %%", r.cvAccuracy * 100))"
+                + " | \(String(format: "%.1f %%", r.class5Recall * 100))"
+                + " | \(leak(r.class5ToClass1Count, r.class5ToClass1Pct))"
+                + " | \(leak(r.class5ToClass4Count, r.class5ToClass4Pct))"
+                + " | \(String(format: "%.1f %%", r.class1Precision * 100))"
+                + " | \(scoreCell) |"
+            )
+        }
+
+        if let winner = ranked.first {
+            lines.append("")
+            lines.append("**Recommended: `\(winner.configName)`** — CV \(String(format: "%.1f %%", winner.cvAccuracy * 100)) · cls-5 recall \(String(format: "%.1f %%", winner.class5Recall * 100)) · 5→1 \(winner.class5ToClass1Count) (\(String(format: "%.1f %%", winner.class5ToClass1Pct * 100))) · 5→4 \(winner.class5ToClass4Count) (\(String(format: "%.1f %%", winner.class5ToClass4Pct * 100)))")
+
+            // Emit the exact settings the winner would apply so the
+            // report is actionable without re-running the sweep.
+            let c = winner.config
+            var settings: [String] = []
+            if let boosts = c.classBoosts { settings.append("classBoosts=\(boosts)") }
+            if let h = c.hiddenDim { settings.append("hiddenDim=\(h)") }
+            if let lr = c.learningRate { settings.append("lr=\(lr)") }
+            if let it = c.iterations { settings.append("iterations=\(it)") }
+            if let l2 = c.l2 { settings.append("l2=\(l2)") }
+            if c.moonVisibilityScale != 1 { settings.append("moonScale=\(c.moonVisibilityScale)") }
+            if c.sunVisibilityScale != 1 { settings.append("sunScale=\(c.sunVisibilityScale)") }
+            if c.reflectionRiskScale != 1 { settings.append("reflectionScale=\(c.reflectionRiskScale)") }
+            if !settings.isEmpty {
+                lines.append("")
+                lines.append("Config: \(settings.joined(separator: ", "))")
+            }
+        }
+
+        return lines.joined(separator: "\n")
     }
 
     @ViewBuilder private var primaryButton: some View {
