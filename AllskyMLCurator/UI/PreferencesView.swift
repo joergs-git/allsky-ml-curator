@@ -44,6 +44,7 @@ struct PreferencesView: View {
     @State private var dayOnlyMode: Bool        = AppSettings.shared.dayOnlyMode
     @State private var dayOnlySunAltMin: Double = AppSettings.shared.dayOnlySunAltMinDeg
     @State private var sunAltProblemThreshold: Double = AppSettings.shared.sunAltitudeProblemThresholdDeg
+    @State private var showSweepSheet: Bool = false
 
     // MARK: - Advanced tab state
 
@@ -620,6 +621,22 @@ struct PreferencesView: View {
                 .padding(.vertical, 4)
             }
 
+            Section("Hyperparameter sweep (autopilot)") {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Auto-tune ML settings")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Sweeps ~12 combinations of per-class boosts, hidden-layer width, learning rate, iterations, and the moon/sun/reflection feature-scale multipliers. Each fit runs 5-fold CV so the reported numbers are honest. Ranks by a composite score that penalises class-5 → {1, 4} leaks (the moon-glow misclassification pattern the 0.5.x audit flagged). Pick the winner and the matching settings are written back to Preferences → Training.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
+                    Button("Run sweep…") { showSweepSheet = true }
+                }
+                .padding(.vertical, 4)
+            }
+
             Section("Embedding warmer") {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -734,6 +751,9 @@ struct PreferencesView: View {
                 },
                 secondaryButton: .cancel()
             )
+        }
+        .sheet(isPresented: $showSweepSheet) {
+            HyperparamSweepView(onDismiss: { showSweepSheet = false })
         }
     }
 

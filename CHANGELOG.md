@@ -4,6 +4,55 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.6.0] — 2026-04-22
+
+**ML hyperparameter autopilot**. First-class in-app sweep over
+class-weight / hidden-dim / learning-rate / iterations / L2 /
+feature-scale combinations. The 0.5.6 moon-visibility feature
+alone didn't break the class-5 → {1, 4} moon-glow leak; the right
+answer was systematic search over config space rather than
+single-knob tuning.
+
+### Added
+- **`ClassifierEngine.SweepConfig` / `SweepResult` / `SweepStatus`**
+  public types. Sweep API runs GD + 5-fold CV for each config and
+  ranks by a composite score `cvAccuracy − 0.5 × (class5→1 + class5→4)`,
+  targeting the moon-glow misclassification pattern the 0.5.x audit
+  surfaced.
+- **`ClassifierEngine.sweep(configs:)`** that walks the grid and
+  publishes live progress through `@Published var sweepStatus`.
+  Heavy math dispatched to a detached `userInitiated` task so the
+  UI stays reactive during the ~60 s run.
+- **`ClassifierEngine.defaultSweepGrid()`** — 12 preset configs
+  covering three axes:
+  1. moon/sun/reflection feature scaling (×10, ×50, ×100, ×20 mix)
+  2. class-5 per-class boost (1.5×, 2.0×) layered on feature scaling
+  3. hidden-dim capacity (256, 512) with moderate scaling
+  plus a baseline and a kitchen-sink "aggro" config.
+- **Per-sample feature-vector scaling** applied at sweep time to
+  indices 777 (`reflection_risk_score`), 782 (`moon_visibility`),
+  and 783 (`sun_visibility`). Lets the sweep probe whether the MLP
+  actually uses those interaction signals when they dominate the
+  input magnitude.
+- **`HyperparamSweepView` sheet** — Preferences → Advanced →
+  "Hyperparameter sweep (autopilot)" → "Run sweep…". Live progress
+  bar + current-config label while running; per-config ranked table
+  (config, CV, cls-5 recall, 5→1 / 5→4 leak counts + %, cls-1 P,
+  composite score) when done. Each row has an **Apply** button that
+  writes the matching settings back into `AppSettings` and kicks a
+  fresh `train()` so the live model immediately reflects the pick.
+  Feature-scale multipliers aren't persisted yet — the sweep is
+  diagnostic for those.
+
+### Notes on the workflow
+Sweep respects the current Night-only / Day-only / camera filters.
+Run it with Night-only on to tune the night classifier; flip to
+Day-only later to tune the (eventual) day classifier separately.
+Label quality caps accuracy at roughly `1 − labelNoise`, so a
+sweep converging at ~65–70 % on Rheine with ~20 % label noise is
+near its theoretical ceiling — the leak-count columns are the
+honest metric to watch.
+
 ## [0.5.6] — 2026-04-22
 
 Gives the MLP explicit moon- and sun-visibility interaction

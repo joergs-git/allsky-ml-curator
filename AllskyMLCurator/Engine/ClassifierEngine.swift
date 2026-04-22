@@ -132,6 +132,12 @@ final class ClassifierEngine: ObservableObject {
     /// ImageRecord id.
     @Published private(set) var predictions: [Int64: Prediction] = [:]
 
+    /// Live state of the hyperparameter sweep. Off by default; flips
+    /// to `.running` while `sweep()` walks its config grid and ends
+    /// in `.finished` with the per-config results. UI subscribes
+    /// through the @ObservableObject conformance.
+    @Published private(set) var sweepStatus: SweepStatus = .idle
+
     // MARK: - Config
 
     fileprivate struct Hyperparameters: Sendable {
@@ -191,6 +197,294 @@ final class ClassifierEngine: ObservableObject {
     /// — otherwise an older recompute can finish after a newer one
     /// and overwrite the newer model's predictions with stale scores.
     private var weightsVersion: Int = 0
+
+    // MARK: - Sweep API (hyperparameter search)
+
+    /// One row in a sweep grid. Anything left at `nil` falls back to
+    /// the current Preferences value so a sweep can vary a subset
+    /// while holding the rest steady.
+    struct SweepConfig: Sendable {
+        var name: String
+        var classBoosts: [Double]?
+        var hiddenDim: Int?
+        var learningRate: Double?
+        var iterations: Int?
+        var l2: Double?
+        /// Post-build scaling applied to the aux feature at index 782
+        /// (`moon_visibility`). 1.0 = no change. Used to test whether
+        /// amplifying the moon-glow signal helps the MLP discount it
+        /// for clear-sky predictions.
+        var moonVisibilityScale: Float
+        /// Post-build scaling applied to aux index 783 (`sun_visibility`).
+        var sunVisibilityScale: Float
+        /// Post-build scaling applied to aux index 777
+        /// (`reflection_risk_score`). The combined sun + moon geometric
+        /// reflection signal; amplifying it asks the MLP to pay more
+        /// attention to it.
+        var reflectionRiskScale: Float
+
+        init(
+            name: String,
+            classBoosts: [Double]? = nil,
+            hiddenDim: Int? = nil,
+            learningRate: Double? = nil,
+            iterations: Int? = nil,
+            l2: Double? = nil,
+            moonVisibilityScale: Float = 1.0,
+            sunVisibilityScale: Float = 1.0,
+            reflectionRiskScale: Float = 1.0
+        ) {
+            self.name = name
+            self.classBoosts = classBoosts
+            self.hiddenDim = hiddenDim
+            self.learningRate = learningRate
+            self.iterations = iterations
+            self.l2 = l2
+            self.moonVisibilityScale = moonVisibilityScale
+            self.sunVisibilityScale = sunVisibilityScale
+            self.reflectionRiskScale = reflectionRiskScale
+        }
+    }
+
+    /// Per-config outcome surfaced after a sweep completes. Focuses
+    /// on the clear-sky metrics the 0.5.x audit flagged — overall
+    /// accuracy alone hid the fact that class-5 frames were being
+    /// flipped to class 1 / 4 when the moon was up.
+    struct SweepResult: Sendable, Identifiable {
+        var id: String { configName }
+        var configName: String
+        var config: SweepConfig
+        var cvAccuracy: Float
+        var trainAccuracy: Float
+        /// 5×5 row-major confusion (true × 5 + predicted).
+        var confusion: [Int]
+        var class5Recall: Float
+        var class5ToClass1Count: Int
+        var class5ToClass4Count: Int
+        var class5ToClass1Pct: Float
+        var class5ToClass4Pct: Float
+        var class1Recall: Float
+        var class1Precision: Float
+        var durationSeconds: Double
+        var sampleCount: Int
+
+        /// Composite target — higher is better. Rewards overall
+        /// accuracy, penalises class-5 → {1, 4} leaks which are the
+        /// moon-glow symptoms the 0.5.x audit flagged.
+        var compositeScore: Float {
+            cvAccuracy - 0.5 * (class5ToClass1Pct + class5ToClass4Pct)
+        }
+    }
+
+    /// Live sweep state surfaced to the UI. `@Published` so a
+    /// SwiftUI progress view can refresh as each config completes.
+    enum SweepStatus: Sendable {
+        case idle
+        case running(done: Int, total: Int, currentName: String)
+        case finished(results: [SweepResult])
+        case failed(message: String)
+    }
+
+    /// Run `configs` one after another on the current training set
+    /// and report per-config metrics. Intended for headless
+    /// hyperparameter search from an XCTest — gives the curator a
+    /// data-driven answer to "which class-weight / hidden-dim /
+    /// moon-feature-scale combo minimises the class-5 → class-1/4
+    /// leak?" without clicking through ⌘T twelve times by hand.
+    func sweep(_ configs: [SweepConfig]) async -> [SweepResult] {
+        guard let diagnostics = try? await loadTrainingSet() else {
+            sweepStatus = .failed(message: "No training set available.")
+            return []
+        }
+        let baseSamples = diagnostics.samples
+        guard !baseSamples.isEmpty else {
+            sweepStatus = .failed(message: "0 samples after filters — flip off Night-only / adjust threshold.")
+            return []
+        }
+        var classCounts = [Int](repeating: 0, count: numClasses)
+        for sample in baseSamples { classCounts[sample.classIndex] += 1 }
+        let kSnap = numClasses
+
+        let baselineHp = Hyperparameters.current()
+        var out: [SweepResult] = []
+        out.reserveCapacity(configs.count)
+
+        sweepStatus = .running(
+            done: 0,
+            total: configs.count,
+            currentName: configs.first?.name ?? "…"
+        )
+
+        for (idx, config) in configs.enumerated() {
+            sweepStatus = .running(
+                done: idx,
+                total: configs.count,
+                currentName: config.name
+            )
+            let started = Date()
+
+            let hp = Hyperparameters(
+                iterations: config.iterations ?? baselineHp.iterations,
+                learningRate: Float(
+                    config.learningRate ?? Double(baselineHp.learningRate)
+                ),
+                l2: Float(config.l2 ?? Double(baselineHp.l2)),
+                classBoosts: (config.classBoosts ?? []).isEmpty
+                    ? baselineHp.classBoosts
+                    : (config.classBoosts ?? []).map(Float.init),
+                hiddenDim: config.hiddenDim ?? baselineHp.hiddenDim
+            )
+
+            // Apply per-sample feature-vector scaling for the three
+            // interaction signals. Indices match FeatureVectorBuilder
+            // layout (aux slice appended after 768-dim Vision embed).
+            let moonIdx = 782
+            let sunIdx = 783
+            let reflIdx = 777
+            let scaledSamples: [LabeledSample] = baseSamples.map { s in
+                var f = s.features
+                if f.count > moonIdx { f[moonIdx] *= config.moonVisibilityScale }
+                if f.count > sunIdx  { f[sunIdx]  *= config.sunVisibilityScale }
+                if f.count > reflIdx { f[reflIdx] *= config.reflectionRiskScale }
+                return LabeledSample(
+                    imageId: s.imageId,
+                    features: f,
+                    classIndex: s.classIndex,
+                    labelWeight: s.labelWeight
+                )
+            }
+
+            let weights = Self.computeSampleWeights(
+                samples: scaledSamples,
+                classCounts: classCounts,
+                classBoosts: hp.classBoosts,
+                numClasses: kSnap
+            )
+
+            // Run the heavy math on a detached task so the UI stays
+            // responsive between sweep rows (each fit is ~5 s on Rheine).
+            let result = await Task.detached(priority: .userInitiated) {
+                () -> (fit: (W1: [Float], b1: [Float], W2: [Float],
+                             b2: [Float], H: Int, loss: Float, accuracy: Float),
+                       cv: CVResult?) in
+                let fit = Self.fitFullModel(
+                    samples: scaledSamples,
+                    sampleWeights: weights,
+                    hp: hp,
+                    numClasses: kSnap
+                )
+                let cv = Self.runCrossValidationIfFeasible(
+                    samples: scaledSamples,
+                    classCounts: classCounts,
+                    sampleWeights: weights,
+                    hp: hp,
+                    numClasses: kSnap
+                )
+                return (fit, cv)
+            }.value
+
+            let duration = Date().timeIntervalSince(started)
+
+            let confusion = result.cv?.confusion ?? [Int](repeating: 0, count: kSnap * kSnap)
+            let cls5Row = (4 * kSnap)..<(5 * kSnap)
+            let row5 = Array(confusion[cls5Row])
+            let row1 = Array(confusion[0..<kSnap])
+            let c5Support = max(1, row5.reduce(0, +))
+            let c1Support = max(1, row1.reduce(0, +))
+            let c5Correct = row5[4]
+            let c5ToC1 = row5[0]
+            let c5ToC4 = row5[3]
+            let c1Correct = row1[0]
+            // Class-1 precision: column sum for predicted=1, diagonal / sum.
+            var col1Sum = 0
+            for r in 0..<kSnap { col1Sum += confusion[r * kSnap + 0] }
+            let c1Precision: Float = col1Sum > 0
+                ? Float(c1Correct) / Float(col1Sum)
+                : 0
+
+            out.append(
+                SweepResult(
+                    configName: config.name,
+                    config: config,
+                    cvAccuracy: result.cv?.accuracy ?? 0,
+                    trainAccuracy: result.fit.accuracy,
+                    confusion: confusion,
+                    class5Recall: Float(c5Correct) / Float(c5Support),
+                    class5ToClass1Count: c5ToC1,
+                    class5ToClass4Count: c5ToC4,
+                    class5ToClass1Pct: Float(c5ToC1) / Float(c5Support),
+                    class5ToClass4Pct: Float(c5ToC4) / Float(c5Support),
+                    class1Recall: Float(c1Correct) / Float(c1Support),
+                    class1Precision: c1Precision,
+                    durationSeconds: duration,
+                    sampleCount: scaledSamples.count
+                )
+            )
+        }
+
+        sweepStatus = .finished(results: out)
+        return out
+    }
+
+    /// Default built-in grid — 12 configs covering the three axes the
+    /// 0.5.x audit flagged: interaction-feature scaling, per-class
+    /// weight boost, and hidden-dim. Kept compact so the full sweep
+    /// finishes in ~30–60 s on a Release build.
+    static func defaultSweepGrid() -> [SweepConfig] {
+        [
+            SweepConfig(name: "baseline"),
+            SweepConfig(name: "moon×10",  moonVisibilityScale: 10),
+            SweepConfig(name: "moon×50",  moonVisibilityScale: 50),
+            SweepConfig(name: "moon×100", moonVisibilityScale: 100),
+            SweepConfig(
+                name: "moon+sun+refl ×20",
+                moonVisibilityScale: 20,
+                sunVisibilityScale: 20,
+                reflectionRiskScale: 20
+            ),
+            SweepConfig(
+                name: "moon+refl ×50",
+                moonVisibilityScale: 50,
+                reflectionRiskScale: 50
+            ),
+            SweepConfig(
+                name: "class5 1.5× + moon×10",
+                classBoosts: [1.0, 1.0, 1.0, 1.0, 1.5],
+                moonVisibilityScale: 10
+            ),
+            SweepConfig(
+                name: "class5 2.0× + moon×50",
+                classBoosts: [1.0, 1.0, 1.0, 1.0, 2.0],
+                moonVisibilityScale: 50
+            ),
+            SweepConfig(name: "hidden 256", hiddenDim: 256),
+            SweepConfig(
+                name: "hidden 256 + moon×20",
+                hiddenDim: 256,
+                moonVisibilityScale: 20
+            ),
+            SweepConfig(
+                name: "hidden 512 + moon×20",
+                hiddenDim: 512,
+                moonVisibilityScale: 20
+            ),
+            SweepConfig(
+                name: "aggro",
+                classBoosts: [1.0, 1.0, 1.0, 1.0, 1.8],
+                hiddenDim: 256,
+                iterations: 400,
+                moonVisibilityScale: 50,
+                sunVisibilityScale: 50,
+                reflectionRiskScale: 30
+            ),
+        ]
+    }
+
+    /// Wipe the sweep panel (after the user applied or dismissed a
+    /// previous run).
+    func resetSweepStatus() {
+        sweepStatus = .idle
+    }
 
     // MARK: - Public API
 
