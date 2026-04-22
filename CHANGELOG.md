@@ -4,6 +4,21 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.7.2] — 2026-04-22
+
+### Added
+- **SQM backfill button** — Preferences → Advanced → "SQM backfill".
+  Walks every image row with `supabaseReadingId != nil` and
+  `cloudwatcherSkyQualityRaw IS NULL`, batch-fetches (500 reading
+  ids per request) from Supabase, writes the value into the local
+  `images` table. Live progress, cancelable. Idempotent — rows
+  already populated are skipped, safe to re-run.
+- **`SupabaseClient.fetchCloudwatcherReadings(ids:)`** — PostgREST
+  `id=in.(…)` filter. Complements the existing time-window fetch.
+- **`ImageLibrary.backfillSkyQuality(progress:)`** — reusable engine
+  method returning `SkyQualityBackfillResult` with counters for
+  updated / missing on Supabase / reading had no SQM value.
+
 ## [0.7.1] — 2026-04-22
 
 ### Added

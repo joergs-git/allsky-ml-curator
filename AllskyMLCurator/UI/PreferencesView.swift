@@ -52,6 +52,9 @@ struct PreferencesView: View {
     @State private var featureExposureGainEnabled: Bool = AppSettings.shared.featureExposureGainEnabled
     @State private var featureVarianceEnabled: Bool = AppSettings.shared.featureVarianceEnabled
     @State private var featureSkyQualityEnabled: Bool = AppSettings.shared.featureSkyQualityEnabled
+    @State private var sqmBackfillTask: Task<Void, Never>?
+    @State private var sqmBackfillProgress: ImageLibrary.SkyQualityBackfillProgress?
+    @State private var sqmBackfillResult: ImageLibrary.SkyQualityBackfillResult?
 
     // MARK: - Advanced tab state
 
@@ -739,6 +742,43 @@ struct PreferencesView: View {
                 .padding(.vertical, 4)
             }
 
+            Section("SQM backfill") {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Backfill CloudWatcher sky_quality_raw")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Walks every image row that was paired with a cloudwatcher reading at ingest but is missing the SQM column (frames ingested before 0.7.1). Fetches the missing `sky_quality_raw` values from Supabase in batches of 500 reading ids and writes them into the local `images` table. Safe to re-run — rows that already have SQM are skipped. Required once so the 0.7.1 aux features (indices 790/791) light up for the whole library; new ingests get SQM directly.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let p = sqmBackfillProgress {
+                            ProgressView(
+                                value: Double(p.batchesDone),
+                                total: Double(max(p.totalBatches, 1))
+                            )
+                            .progressViewStyle(.linear)
+                            .padding(.top, 4)
+                            Text("Batch \(p.batchesDone) of \(p.totalBatches) · \(p.rowsUpdated) updated · \(p.rowsMissing) reading ids not found on Supabase")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        } else if let r = sqmBackfillResult {
+                            Text("Done: \(r.rowsUpdated) updated of \(r.totalEligible) eligible · \(r.rowsMissing) missing on Supabase · \(r.rowsSkippedNoSqmOnReading) readings had no SQM value · \(String(format: "%.1f", r.durationSeconds)) s")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .padding(.top, 4)
+                        }
+                    }
+                    Spacer()
+                    if sqmBackfillTask != nil {
+                        Button("Cancel") { sqmBackfillTask?.cancel() }
+                    } else {
+                        Button("Backfill…") { startSqmBackfill() }
+                            .disabled(isPurging)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+
             Section("Thumbnail repair") {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -874,6 +914,25 @@ struct PreferencesView: View {
             return "Rated phase — \(warmer.done) of \(warmer.total) walked, \(warmer.newlyEmbedded) new sidecar(s) written"
         case .unrated:
             return "Unrated phase — \(warmer.done) of \(warmer.total) walked, \(warmer.newlyEmbedded) new sidecar(s) written"
+        }
+    }
+
+    private func startSqmBackfill() {
+        guard sqmBackfillTask == nil else { return }
+        sqmBackfillProgress = ImageLibrary.SkyQualityBackfillProgress(
+            totalEligible: 0, batchesDone: 0, totalBatches: 0,
+            rowsUpdated: 0, rowsMissing: 0
+        )
+        sqmBackfillResult = nil
+        sqmBackfillTask = Task {
+            let result = await ImageLibrary.shared.backfillSkyQuality { snapshot in
+                Task { @MainActor in sqmBackfillProgress = snapshot }
+            }
+            await MainActor.run {
+                sqmBackfillResult = result
+                sqmBackfillProgress = nil
+                sqmBackfillTask = nil
+            }
         }
     }
 

@@ -382,4 +382,156 @@ final class ImageLibrary: ObservableObject {
             NSLog("ImageLibrary DB write failed: \(error)")
         }
     }
+
+    // MARK: - SQM backfill (0.7.2)
+
+    /// Progress emitted by the SQM backfill so the Preferences UI can
+    /// show a live counter. All values are cumulative since `run` was
+    /// called.
+    struct SkyQualityBackfillProgress: Equatable, Sendable {
+        var totalEligible: Int
+        var batchesDone: Int
+        var totalBatches: Int
+        var rowsUpdated: Int
+        var rowsMissing: Int     // id was set but Supabase returned no match
+    }
+
+    /// Result summary returned when the backfill completes (or is
+    /// cancelled). `durationSeconds` is wall-clock time including
+    /// Supabase round-trips.
+    struct SkyQualityBackfillResult: Equatable, Sendable {
+        var totalEligible: Int
+        var rowsUpdated: Int
+        var rowsMissing: Int
+        var rowsSkippedNoSqmOnReading: Int
+        var durationSeconds: Double
+    }
+
+    /// Walk every image row with `supabaseReadingId != nil` and
+    /// `cloudwatcherSkyQualityRaw IS NULL`, batch-fetch the
+    /// corresponding `cloudwatcher_readings` rows from Supabase, and
+    /// write `sky_quality_raw` into the local image row.
+    ///
+    /// Batches of 500 ids per request — PostgREST's `in.()` filter
+    /// takes a URL-encoded list, so we stay well under the URL limit.
+    /// `progress` fires after each batch commits so the UI can
+    /// animate smoothly; cancellation is checked before each batch.
+    func backfillSkyQuality(
+        progress: @Sendable @escaping (SkyQualityBackfillProgress) -> Void
+    ) async -> SkyQualityBackfillResult {
+        let started = Date()
+        let reader = Database.shared.reader
+        let writer = Database.shared.writer
+
+        // Gather (imageId, readingId) pairs for rows that still need
+        // SQM. Keep the initial read small — we only need two Int64s
+        // per row.
+        let eligible: [(imageId: Int64, readingId: Int64)] = (try? await reader.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT id, supabaseReadingId
+                FROM images
+                WHERE supabaseReadingId IS NOT NULL
+                  AND cloudwatcherSkyQualityRaw IS NULL
+                ORDER BY id ASC
+            """)
+            return rows.compactMap { row -> (Int64, Int64)? in
+                guard let imgId: Int64 = row["id"],
+                      let rid: Int64 = row["supabaseReadingId"]
+                else { return nil }
+                return (imgId, rid)
+            }
+        }) ?? []
+
+        if eligible.isEmpty {
+            return SkyQualityBackfillResult(
+                totalEligible: 0,
+                rowsUpdated: 0,
+                rowsMissing: 0,
+                rowsSkippedNoSqmOnReading: 0,
+                durationSeconds: Date().timeIntervalSince(started)
+            )
+        }
+
+        // Group image ids by their reading id so a single SQM
+        // response can update all images that shared a reading.
+        var imagesByReading: [Int64: [Int64]] = [:]
+        for pair in eligible {
+            imagesByReading[pair.readingId, default: []].append(pair.imageId)
+        }
+        let uniqueReadingIds = Array(imagesByReading.keys).sorted()
+        let batchSize = 500
+        let totalBatches = (uniqueReadingIds.count + batchSize - 1) / batchSize
+
+        progress(SkyQualityBackfillProgress(
+            totalEligible: eligible.count,
+            batchesDone: 0,
+            totalBatches: totalBatches,
+            rowsUpdated: 0,
+            rowsMissing: 0
+        ))
+
+        var rowsUpdated = 0
+        var rowsMissing = 0
+        var rowsSkippedNoSqmOnReading = 0
+
+        for (batchIdx, start) in stride(from: 0, to: uniqueReadingIds.count, by: batchSize).enumerated() {
+            if Task.isCancelled { break }
+
+            let batch = Array(
+                uniqueReadingIds[start ..< min(start + batchSize, uniqueReadingIds.count)]
+            )
+
+            let readings: [SupabaseClient.CloudwatcherReading]
+            do {
+                readings = try await SupabaseClient.shared
+                    .fetchCloudwatcherReadings(ids: batch)
+            } catch {
+                NSLog("SQM backfill batch \(batchIdx + 1) / \(totalBatches) failed: \(error)")
+                continue
+            }
+
+            // Map reading.id → sky_quality_raw, then write each
+            // image row that pointed at that reading.
+            let sqmByReading: [Int64: Int?] = Dictionary(
+                uniqueKeysWithValues: readings.map { ($0.id, $0.skyQualityRaw) }
+            )
+            let matchedReadings = Set(readings.map(\.id))
+            let batchSet = Set(batch)
+            rowsMissing += batchSet.subtracting(matchedReadings).count
+
+            try? await writer.write { db in
+                for readingId in batch {
+                    guard let imageIds = imagesByReading[readingId] else { continue }
+                    guard let maybeSqm = sqmByReading[readingId] else { continue }
+                    guard let sqm = maybeSqm else {
+                        rowsSkippedNoSqmOnReading += imageIds.count
+                        continue
+                    }
+                    for imgId in imageIds {
+                        try db.execute(
+                            sql: "UPDATE images SET cloudwatcherSkyQualityRaw = ? WHERE id = ?",
+                            arguments: [sqm, imgId]
+                        )
+                        rowsUpdated += 1
+                    }
+                }
+            }
+
+            progress(SkyQualityBackfillProgress(
+                totalEligible: eligible.count,
+                batchesDone: batchIdx + 1,
+                totalBatches: totalBatches,
+                rowsUpdated: rowsUpdated,
+                rowsMissing: rowsMissing
+            ))
+        }
+
+        return SkyQualityBackfillResult(
+            totalEligible: eligible.count,
+            rowsUpdated: rowsUpdated,
+            rowsMissing: rowsMissing,
+            rowsSkippedNoSqmOnReading: rowsSkippedNoSqmOnReading,
+            durationSeconds: Date().timeIntervalSince(started)
+        )
+    }
 }

@@ -195,6 +195,32 @@ final class SupabaseClient {
         return try await get(url: url, config: config, as: [CloudwatcherReading].self)
     }
 
+    /// Fetch specific cloudwatcher_readings rows by id. Used by the
+    /// SQM backfill — we already know each frame's matched reading
+    /// id (denormalised at ingest time), so asking for those rows by
+    /// id is the cheapest way to pull just the `sky_quality_raw`
+    /// scalars we were missing pre-0.7.1. Callers batch `ids` so the
+    /// PostgREST `in.()` filter stays under URL length limits; 500
+    /// per request is a safe upper bound.
+    func fetchCloudwatcherReadings(
+        ids: [Int64]
+    ) async throws -> [CloudwatcherReading] {
+        guard !ids.isEmpty else { return [] }
+        let config = try configOrThrow()
+        let idList = ids.map(String.init).joined(separator: ",")
+        let url = try endpoint(
+            config: config,
+            path: "/rest/v1/cloudwatcher_readings",
+            query: [
+                URLQueryItem(name: "select", value:
+                    "id,timestamp,sky_temperature,ambient_temperature,sky_minus_ambient,sky_quality_raw,humidity,allsky_url,zwo_url,zwo_fits_url"),
+                URLQueryItem(name: "id", value: "in.(\(idList))"),
+                URLQueryItem(name: "limit", value: "\(ids.count)")
+            ]
+        )
+        return try await get(url: url, config: config, as: [CloudwatcherReading].self)
+    }
+
     /// Payload for a single row upserted into `ml_training_samples`.
     /// Matches the migration's column set exactly; the server-side
     /// `UNIQUE (image_path)` constraint drives the upsert semantics.
