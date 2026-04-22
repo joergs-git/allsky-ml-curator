@@ -4,6 +4,41 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.5.6] — 2026-04-22
+
+Gives the MLP explicit moon- and sun-visibility interaction
+features so it can learn "bright moon high up → expect sky glow,
+not cloud" without first having to discover the `phase × sin(alt)`
+interaction from 4 separate scalars.
+
+### Added
+- **Two new aux features at the tail of the feature vector**:
+  * `moon_visibility = moon_phase × max(0, sin(moon_alt))`
+  * `sun_visibility  = max(0, sin(sun_alt))`
+  Same formulas as the bottom-left tile icons, so the signal the
+  curator *sees* on the tile matches what the model *gets as
+  input*.
+- **Feature vector grows 782 → 784**, `FeatureVectorBuilder.auxCount`
+  14 → 16.
+
+### Why this should help
+
+The linear softmax head from 0.4.x could represent `a × b` as a
+single weight on the interaction term. The MLP head (0.5.0
+onwards) has to compose `a × b` through a ReLU layer, which at
+~1.5k night-clear samples was demonstrably *not* being learned —
+the 0.5.5 mismatch review showed bright-moon-on-clear-sky frames
+being predicted as class 4 (thin cloud) or even class 1 (full
+clouds). Precomputing the interaction short-circuits that.
+
+### Required action
+
+Existing trained classifier blobs (CMLW v2, 782-dim) are rejected
+by `decodeWeights` because the featureDim no longer matches. The
+app silently falls back to "untrained" on launch; the user hits
+⌘T once to retrain on the new 784-dim vector. Takes ~5 s on the
+Release build.
+
 ## [0.5.5] — 2026-04-22
 
 Mirror of the night-only path for a future daytime classifier.

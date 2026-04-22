@@ -21,8 +21,21 @@ import Foundation
 /// [779]        mb_has_forecast         (0 or 1)
 /// [780]        mb_total_cloud_norm     (totalcloud / 100, 0…1)
 /// [781]        mb_seeing_norm          ((seeing_arcsec - 1) / 5, clamped)
+/// [782]        moon_visibility         = moon_phase × max(0, sin(moon_alt)) — 0.5.6
+/// [783]        sun_visibility          = max(0, sin(sun_alt))                — 0.5.6
 /// ```
-/// Total: 782 features.
+/// Total: 784 features.
+///
+/// Why the two visibility interactions (0.5.6): the linear classifier
+/// head can represent `a × b` as a single weight on the interaction
+/// term, but an MLP has to learn `a × b` as a composition of two
+/// linear transforms + a ReLU. At 1.5 k night-clear samples that
+/// composition was demonstrably *not* being learned — bright moon
+/// glow on a clear sky kept getting predicted as class 4 / class 1,
+/// because the model couldn't relate "moon_alt high AND moon_phase
+/// high" to "expected brightness artefact is not cloud". Precomputing
+/// the interaction gives the model a direct signal it can latch onto
+/// without needing a nonlinear hidden unit to discover the product.
 ///
 /// Why the two risk scores matter: a frame with a strong sun / moon
 /// reflection looks bright and "feature-rich" in image space alone,
@@ -38,7 +51,7 @@ enum FeatureVectorBuilder {
 
     /// Aux-only slice length. Embedding length is appended on top by
     /// the embedding pipeline and known per revision at runtime.
-    static let auxCount = 14
+    static let auxCount = 16
 
     /// Build the full feature vector for one image. Returns `nil`
     /// when either the cached embedding or the basic ImageRecord
@@ -81,6 +94,18 @@ enum FeatureVectorBuilder {
             ? Float(max(0.0, min(1.0, ((image.meteoblueSeeingArcsec ?? 1.0) - 1.0) / 5.0)))
             : 0
 
+        // Pre-computed body-visibility interactions. Same formulas
+        // the tile icons use, so what the curator *sees* (bottom-left
+        // moon / sun badge) and what the model *gets as input* stay
+        // aligned. Clamped to ≥ 0 so negative altitudes collapse to
+        // zero without having to encode below-horizon specially.
+        let moonAltRad = image.moonAltDeg * .pi / 180.0
+        let sunAltRad = image.sunAltDeg * .pi / 180.0
+        let moonVisibility = Float(
+            image.moonPhase * max(0.0, sin(moonAltRad))
+        )
+        let sunVisibility = Float(max(0.0, sin(sunAltRad)))
+
         return [
             Float(image.sunAltDeg / 90.0),
             Float(sin(sunAzRad)),
@@ -95,7 +120,9 @@ enum FeatureVectorBuilder {
             Float(image.transitionalRiskScore),
             hasForecast,
             cloudNorm,
-            seeingNorm
+            seeingNorm,
+            moonVisibility,
+            sunVisibility
         ]
     }
 
