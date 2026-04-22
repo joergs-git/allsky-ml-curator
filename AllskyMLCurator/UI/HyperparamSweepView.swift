@@ -119,7 +119,7 @@ struct HyperparamSweepView: View {
             )
             lines.append("")
         }
-        lines.append("| config | CV | cls-5 R | 5→1 | 5→4 | cls-1 P | MAE | score |")
+        lines.append("| config | CV | suitable R | S→U | S→P | unsuit P | MAE | score |")
         lines.append("|---|---|---|---|---|---|---|---|")
         for r in ranked {
             let isWinner = r.id == winnerId
@@ -134,10 +134,10 @@ struct HyperparamSweepView: View {
             lines.append(
                 "| \(nameCell)"
                 + " | \(String(format: "%.1f %%", r.cvAccuracy * 100))"
-                + " | \(String(format: "%.1f %%", r.class5Recall * 100))"
-                + " | \(leak(r.class5ToClass1Count, r.class5ToClass1Pct))"
-                + " | \(leak(r.class5ToClass4Count, r.class5ToClass4Pct))"
-                + " | \(String(format: "%.1f %%", r.class1Precision * 100))"
+                + " | \(String(format: "%.1f %%", r.suitableRecall * 100))"
+                + " | \(leak(r.suitableToUnsuitableCount, r.suitableToUnsuitablePct))"
+                + " | \(leak(r.suitableToPartialCount, r.suitableToPartialPct))"
+                + " | \(String(format: "%.1f %%", r.unsuitablePrecision * 100))"
                 + " | \(String(format: "%.2f", r.meanAbsError))"
                 + " | \(scoreCell) |"
             )
@@ -145,7 +145,7 @@ struct HyperparamSweepView: View {
 
         if let winner = ranked.first {
             lines.append("")
-            lines.append("**Recommended: `\(winner.configName)`** — CV \(String(format: "%.1f %%", winner.cvAccuracy * 100)) · cls-5 recall \(String(format: "%.1f %%", winner.class5Recall * 100)) · 5→1 \(winner.class5ToClass1Count) (\(String(format: "%.1f %%", winner.class5ToClass1Pct * 100))) · 5→4 \(winner.class5ToClass4Count) (\(String(format: "%.1f %%", winner.class5ToClass4Pct * 100)))")
+            lines.append("**Recommended: `\(winner.configName)`** — CV \(String(format: "%.1f %%", winner.cvAccuracy * 100)) · suitable recall \(String(format: "%.1f %%", winner.suitableRecall * 100)) · S→U \(winner.suitableToUnsuitableCount) (\(String(format: "%.1f %%", winner.suitableToUnsuitablePct * 100))) · S→P \(winner.suitableToPartialCount) (\(String(format: "%.1f %%", winner.suitableToPartialPct * 100)))")
 
             // Emit the exact settings the winner would apply so the
             // report is actionable without re-running the sweep.
@@ -190,7 +190,7 @@ struct HyperparamSweepView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("What this does")
                 .font(.headline)
-            Text("Trains the classifier 12 times with different hyperparameters and per-sample feature scalings, then ranks them by a distance-aware composite score: **1 − MAE / 4**, where MAE is the mean absolute error in class-index units over the 5-fold CV confusion matrix. RatingClass is totally ordered (cloudiness is monotonic), so a 5 → 4 slip is scored much gentler than a 5 → 1 flip — 0.7.4 change from the prior binary-miss penalty. Each fit runs ~5 s on a Release build, so the full sweep takes about a minute.")
+            Text("Trains the classifier 12 times with different hyperparameters and per-sample feature scalings, then ranks them by a distance-aware composite score: **1 − MAE / 2**, where MAE is the mean absolute error in class-index units over the 5-fold CV confusion matrix. RatingClass is totally ordered (unsuitable → partial → suitable), so a suitable → partial slip is scored much gentler than a suitable → unsuitable flip. Each fit runs ~5 s on a Release build, so the full sweep takes about a minute.")
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
             Text("Applies only to the current filter slice — e.g. if Night-only mode is on, the sweep trains on night frames and the winning config is the best for that slice.")
@@ -218,24 +218,24 @@ struct HyperparamSweepView: View {
                 title: "What the column headers mean",
                 body: """
 CV = 5-fold cross-validation accuracy (honest generalisation estimate).
-cls-5 R = recall on truly clear frames — fraction correctly kept as clear.
-5→1 = clear frames flipped to full clouds (worst-case leak: distance = 4).
-5→4 = clear frames slipped to thin clouds (minor leak: distance = 1).
-cls-1 P = precision on full-cloud predictions (when the model says "1", how often is it right).
-MAE = mean absolute error in class-index units, averaged over every CV prediction. 0 = perfect, 4 = worst possible. ~0.3–0.5 is a well-tuned ordinal classifier at our data scale.
-score = 1 − MAE / 4. Distance-aware composite; higher is better.
+suitable R = recall on truly suitable frames — fraction correctly kept as imaging-ready.
+S→U = suitable frames flipped to unsuitable (worst-case leak: distance = 2).
+S→P = suitable frames slipped to partial (adjacent leak: distance = 1).
+unsuit P = precision on unsuitable predictions (when the model says "1", how often is it right).
+MAE = mean absolute error in class-index units, averaged over every CV prediction. 0 = perfect, 2 = worst possible. ~0.2–0.4 is a well-tuned 3-class ordinal classifier at our data scale.
+score = 1 − MAE / 2. Distance-aware composite; higher is better.
 """
             )
             helpBlock(
-                title: "Why the score is distance-aware (0.7.4 change)",
-                body: "The earlier composite (`CV − 0.5 × leak rate`) treated every mismatch equally: a 5 → 4 slip and a 5 → 1 flip both counted as one 'wrong'. But cloudiness is ordinal — mistaking 'clear' for 'thin cloud' is a much smaller downstream problem than mistaking it for 'full clouds'. The new composite uses ordinal distance (|predicted − actual|) so adjacent misses barely move the score and extreme flips are punished hard. Same goes for the matrix tile borders — amber for distance 1, orange for 2, deep-orange for 3, red for the 4-away worst case."
+                title: "Why the score is distance-aware",
+                body: "RatingClass is totally ordered (unsuitable → partial → suitable), so a suitable → partial slip is a much smaller downstream problem than a suitable → unsuitable flip. The composite uses ordinal distance (|predicted − actual|) instead of binary-miss, so adjacent misses barely move the score and extreme flips are punished hard. Same applies to the matrix tile borders — amber for distance 1, red for distance 2."
             )
             helpBlock(
                 title: "What the 12 configs probe",
                 body: """
 3 axes × variants:
   (A) feature-scale — multiply moon / sun / reflection aux features by 10×, 50×, 100× so they dominate the first MLP layer instead of drowning in the 768-dim Vision embedding.
-  (B) per-class boost — 1.5× or 2.0× on class-5 to make the model care more about getting clear right.
+  (B) per-class boost — 1.5× or 2.0× on suitable to make the model care more about getting imaging-ready right.
   (C) hidden-dim capacity — 256 or 512 hidden units for more non-linear room.
 Plus a baseline (your current Preferences) and a kitchen-sink "aggro" config that stacks everything.
 """
@@ -250,7 +250,7 @@ Plus a baseline (your current Preferences) and a kitchen-sink "aggro" config tha
             )
             helpBlock(
                 title: "When it won't help",
-                body: "If labels are the bottleneck (noisy / inconsistent human ratings), every config plateaus at the same ceiling. The leak-count columns are your tell — if all rows show similar 5→4 counts, the feature space genuinely can't separate those frames and more hyperparameter tuning won't change that. Go label-audit instead."
+                body: "If labels are the bottleneck (noisy / inconsistent human ratings), every config plateaus at the same ceiling. The leak-count columns are your tell — if all rows show similar S→P counts, the feature space genuinely can't separate those frames and more hyperparameter tuning won't change that. Go label-audit instead."
             )
         }
     }
@@ -307,10 +307,10 @@ Plus a baseline (your current Preferences) and a kitchen-sink "aggro" config tha
                 GridRow {
                     columnHeader("config")
                     columnHeader("CV")
-                    columnHeader("cls-5 R")
-                    columnHeader("5→1")
-                    columnHeader("5→4")
-                    columnHeader("cls-1 P")
+                    columnHeader("suitable R")
+                    columnHeader("S→U")
+                    columnHeader("S→P")
+                    columnHeader("unsuit P")
                     columnHeader("MAE")
                     columnHeader("score")
                     columnHeader("")
@@ -323,10 +323,10 @@ Plus a baseline (your current Preferences) and a kitchen-sink "aggro" config tha
                             .font(.callout)
                             .fontWeight(isWinner ? .bold : .regular)
                         pctCell(r.cvAccuracy)
-                        pctCell(r.class5Recall)
-                        leakCell(r.class5ToClass1Count, r.class5ToClass1Pct)
-                        leakCell(r.class5ToClass4Count, r.class5ToClass4Pct)
-                        pctCell(r.class1Precision)
+                        pctCell(r.suitableRecall)
+                        leakCell(r.suitableToUnsuitableCount, r.suitableToUnsuitablePct)
+                        leakCell(r.suitableToPartialCount, r.suitableToPartialPct)
+                        pctCell(r.unsuitablePrecision)
                         Text(String(format: "%.2f", r.meanAbsError))
                             .font(.callout.monospacedDigit())
                             .foregroundStyle(r.meanAbsError > 0.6 ? .red : (r.meanAbsError > 0.3 ? .orange : .primary))
@@ -355,7 +355,7 @@ Plus a baseline (your current Preferences) and a kitchen-sink "aggro" config tha
                 Text("Recommended: \(best.configName)")
                     .font(.headline)
                     .foregroundStyle(.green)
-                Text("CV \(String(format: "%.1f %%", best.cvAccuracy * 100))  ·  Class-5 recall \(String(format: "%.1f %%", best.class5Recall * 100))  ·  5→1 \(best.class5ToClass1Count) (\(String(format: "%.1f %%", best.class5ToClass1Pct * 100)))  ·  5→4 \(best.class5ToClass4Count) (\(String(format: "%.1f %%", best.class5ToClass4Pct * 100)))")
+                Text("CV \(String(format: "%.1f %%", best.cvAccuracy * 100))  ·  Suitable recall \(String(format: "%.1f %%", best.suitableRecall * 100))  ·  S→U \(best.suitableToUnsuitableCount) (\(String(format: "%.1f %%", best.suitableToUnsuitablePct * 100)))  ·  S→P \(best.suitableToPartialCount) (\(String(format: "%.1f %%", best.suitableToPartialPct * 100)))")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                 Text("Click Apply next to the row to write these values into Preferences → Training and retrain automatically. Baseline = your current Preferences; winning it means no change needed.")

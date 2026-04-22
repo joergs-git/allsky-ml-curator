@@ -1,60 +1,60 @@
 import Foundation
 
-/// Cloudiness rating applied by the curator. Orthogonal flags
-/// (reflection, transitional) live on `LabelRecord` separately.
+/// Astrophoto-usability rating applied by the curator. 0.8.0 collapsed
+/// the previous 5-class meteorological-okta scheme (full clouds →
+/// clear) into a 3-class decision-theoretic scheme because the okta
+/// granularity produced unresolvable label ambiguity — a frame with
+/// 50 % horizon cloud but a clear zenith, or a flat thin overcast
+/// with stars showing through, had no unambiguous mapping to an okta
+/// class. The 3-class scheme asks the only question the downstream
+/// consumers (AstroTriage frame-quality, CloudWatcher threshold
+/// tuning) actually care about: **can I image through this?**
+///
+/// Symmetric mapping from the old 5-class labels:
+///   1 (full clouds) + 2 (mostly) → 1 (unsuitable)
+///   3 (some clouds)              → 2 (partial)
+///   4 (thin)       + 5 (clear)   → 3 (suitable)
+///
+/// Applied by migration `v8_remap_rating_classes_to_three_class` at
+/// launch. Lossless given the fixed mapping; any label lifted into a
+/// category it doesn't actually belong in (e.g. an old "3 — some
+/// clouds" that was really a full-clouds night with a tiny gap) can
+/// be re-classified post-migration via the mismatch-audit workflow.
+///
+/// Orthogonal flags (reflection, transitional) still live on
+/// `LabelRecord` separately.
 enum RatingClass: Int, Codable, CaseIterable, Sendable {
-    case unrated   = 0
-    case fullCloud = 1
-    case mostly    = 2
-    case some      = 3
-    case thin      = 4  // thin cloud or dust layer
-    case clear     = 5
+    case unrated    = 0
+    case unsuitable = 1   // don't bother — cloud / fog too heavy
+    case partial    = 2   // borderline — maybe wide-field / lucky patches
+    case suitable   = 3   // imaging-ready clear sky
 
     /// Short human-readable name used in tooltips and preferences.
     var shortName: String {
         switch self {
-        case .unrated:   return "unrated"
-        case .fullCloud: return "full clouds"
-        case .mostly:    return "mostly clouds"
-        case .some:      return "some clouds"
-        case .thin:      return "little / thin"
-        case .clear:     return "clear"
+        case .unrated:    return "unrated"
+        case .unsuitable: return "unsuitable"
+        case .partial:    return "partial"
+        case .suitable:   return "suitable"
         }
     }
 
-    /// Rule-of-thumb sky-coverage range corresponding to each class.
-    /// Mirrors the standard meteorological okta scheme (0…8 eighths
-    /// of sky covered → METAR categories SKC / FEW / SCT / BKN / OVC),
-    /// rebinned into the curator's 1…5 classes. Shown next to the
-    /// stars in the side panel so the rater can calibrate "what
-    /// counts as class 3" against a fixed number instead of gut feel.
+    /// Decision-theoretic hint alongside the pill in the side panel
+    /// so the curator can calibrate on the actual usage question
+    /// rather than the prior meteorological-okta estimate.
     var coverageHint: String {
         switch self {
-        case .unrated:   return ""
-        case .fullCloud: return "90–100 %"   // 8/8 OVC
-        case .mostly:    return "60–90 %"    // 5-7/8 BKN
-        case .some:      return "30–60 %"    // 3-4/8 SCT
-        case .thin:      return "10–30 %"    // 1-2/8 FEW
-        case .clear:     return "0–10 %"     // 0/8 SKC
+        case .unrated:    return ""
+        case .unsuitable: return "don't image"
+        case .partial:    return "mosaic / wide-field only"
+        case .suitable:   return "full-quality imaging"
         }
     }
 
-    /// Whether this class should receive the extra clear-sky training
-    /// weight boost. Rheine nights are dominantly cloudy, so rare clear
-    /// samples (4 and 5) carry more training signal per instance.
-    var isClearSkyBoostEligible: Bool {
-        switch self {
-        case .thin, .clear: return true
-        default:            return false
-        }
-    }
-
-    /// Ordinal distance from another class — 0 when identical, 4 at
-    /// the extremes (full-clouds ↔ clear). RatingClass is a totally
-    /// ordered cloudiness scale, so `|a.rawValue − b.rawValue|` is
-    /// the natural magnitude of a classification error. `.unrated`
-    /// (0) falls outside the ordinal axis and returns 0 — callers
-    /// should gate on `isRated` before invoking `distance`.
+    /// Ordinal distance from another class — 0 when identical, 2 at
+    /// the extremes (suitable ↔ unsuitable). `.unrated` (0) falls
+    /// outside the ordinal axis and returns 0; callers should gate
+    /// on `isRated` before invoking `distance`.
     func distance(to other: RatingClass) -> Int {
         guard rawValue > 0, other.rawValue > 0 else { return 0 }
         return abs(rawValue - other.rawValue)
@@ -95,8 +95,7 @@ enum RatingFilter: Hashable, Identifiable, Sendable {
         case .any:              return "Any rating"
         case .unrated:          return "Only unrated"
         case .exactly(let c):
-            let stars = String(repeating: "★", count: c.rawValue)
-            return "Only \(stars)  \(c.shortName)"
+            return "Only \(c.rawValue) — \(c.shortName)"
         }
     }
 
@@ -105,11 +104,9 @@ enum RatingFilter: Hashable, Identifiable, Sendable {
         [
             .any,
             .unrated,
-            .exactly(.fullCloud),
-            .exactly(.mostly),
-            .exactly(.some),
-            .exactly(.thin),
-            .exactly(.clear)
+            .exactly(.unsuitable),
+            .exactly(.partial),
+            .exactly(.suitable)
         ]
     }
 

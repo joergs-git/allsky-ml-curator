@@ -106,7 +106,8 @@ struct InfoSidePanel: View {
             )
 
             VStack(alignment: .leading, spacing: 4) {
-                ForEach([RatingClass.clear, .thin, .some, .mostly, .fullCloud], id: \.self) { cls in
+                // 0.8.0: three classes, top-down suitable → unsuitable
+                ForEach([RatingClass.suitable, .partial, .unsuitable], id: \.self) { cls in
                     starRow(for: cls, count: classCount(for: cls))
                 }
             }
@@ -140,19 +141,15 @@ struct InfoSidePanel: View {
     private func starRow(for cls: RatingClass, count: Int) -> some View {
         let color = AppColors.tier(cls, night: nightMode)
         return HStack(spacing: 8) {
-            HStack(spacing: 1) {
-                ForEach(0..<cls.rawValue, id: \.self) { _ in
-                    Image(systemName: "star.fill")
-                        .font(.system(size: 13, weight: .black))
-                        .foregroundStyle(color)
-                }
-                ForEach(0..<(5 - cls.rawValue), id: \.self) { _ in
-                    Image(systemName: "star")
-                        .font(.system(size: 13, weight: .black))
-                        .foregroundStyle(AppColors.fgVeryDim(nightMode))
-                }
-            }
-            .frame(width: 96, alignment: .leading)
+            // 0.8.0 colour-pill badge replaces the 1..5 star cluster.
+            // 48 px fixed width so the three rows line up cleanly.
+            Text("\(cls.rawValue)")
+                .font(.system(size: 14, weight: .black, design: .rounded))
+                .foregroundStyle(.white)
+                .frame(width: 28, height: 20)
+                .background(color)
+                .clipShape(Capsule())
+                .frame(width: 48, alignment: .leading)
             (
                 Text(cls.shortName)
                     .font(.caption)

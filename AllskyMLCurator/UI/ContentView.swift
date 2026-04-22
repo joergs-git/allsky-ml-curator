@@ -688,12 +688,10 @@ struct ContentView: View {
 
     private var keybindLegend: some View {
         HStack(spacing: 8) {
-            legendRatingChip(key: "0", ratingClass: .unrated,   label: "unrated")
-            legendRatingChip(key: "1", ratingClass: .fullCloud, label: "full clouds")
-            legendRatingChip(key: "2", ratingClass: .mostly,    label: "mostly")
-            legendRatingChip(key: "3", ratingClass: .some,      label: "some clouds")
-            legendRatingChip(key: "4", ratingClass: .thin,      label: "little / thin")
-            legendRatingChip(key: "5", ratingClass: .clear,     label: "clear")
+            legendRatingChip(key: "0", ratingClass: .unrated,    label: "unrated")
+            legendRatingChip(key: "1", ratingClass: .unsuitable, label: "unsuitable")
+            legendRatingChip(key: "2", ratingClass: .partial,    label: "partial")
+            legendRatingChip(key: "3", ratingClass: .suitable,   label: "suitable")
 
             Divider().frame(height: 18)
 

@@ -371,12 +371,12 @@ struct ListView: View {
         }
 
         switch press.characters {
-        case "0": applyRating(.unrated);   return .handled
-        case "1": applyRating(.fullCloud); return .handled
-        case "2": applyRating(.mostly);    return .handled
-        case "3": applyRating(.some);      return .handled
-        case "4": applyRating(.thin);      return .handled
-        case "5": applyRating(.clear);     return .handled
+        case "0": applyRating(.unrated);    return .handled
+        case "1": applyRating(.unsuitable); return .handled
+        case "2": applyRating(.partial);    return .handled
+        case "3": applyRating(.suitable);   return .handled
+        // 4 / 5 no-op in 0.8.0 3-class scheme.
+        case "4", "5": return .handled
         case "r", "R": toggleFlag(.reflection);   return .handled
         case "t", "T": toggleFlag(.transitional); return .handled
         default: return .ignored

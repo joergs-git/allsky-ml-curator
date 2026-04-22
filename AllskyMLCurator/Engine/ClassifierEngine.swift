@@ -162,7 +162,7 @@ final class ClassifierEngine: ObservableObject {
         /// train() call.
         static func current() -> Hyperparameters {
             let raw = AppSettings.shared.classWeightBoosts
-            let boosts = (0..<5).map { i in
+            let boosts = (0..<3).map { i in
                 Float(i < raw.count ? raw[i] : 1.0)
             }
             let hidden = max(16, AppSettings.shared.mlpHiddenDim)
@@ -177,7 +177,7 @@ final class ClassifierEngine: ObservableObject {
     }
 
     private var hp = Hyperparameters.current()
-    private let numClasses = 5    // RatingClass 1…5
+    private let numClasses = 3    // RatingClass 1…3 (0.8.0: unsuitable / partial / suitable)
 
     /// Trained parameters — two layers, all row-major:
     ///  - `weights1` [featureDim × hiddenDim] and `bias1` [hiddenDim]
@@ -246,45 +246,43 @@ final class ClassifierEngine: ObservableObject {
         }
     }
 
-    /// Per-config outcome surfaced after a sweep completes. Focuses
-    /// on the clear-sky metrics the 0.5.x audit flagged — overall
-    /// accuracy alone hid the fact that class-5 frames were being
-    /// flipped to class 1 / 4 when the moon was up.
+    /// Per-config outcome surfaced after a sweep completes. Field
+    /// naming reflects the 0.8.0 3-class scheme (unsuitable /
+    /// partial / suitable) — leaks are tracked from the suitable
+    /// class, which is what matters for downstream astro-triage.
     struct SweepResult: Sendable, Identifiable {
         var id: String { configName }
         var configName: String
         var config: SweepConfig
         var cvAccuracy: Float
         var trainAccuracy: Float
-        /// 5×5 row-major confusion (true × 5 + predicted).
+        /// 3×3 row-major confusion (true × 3 + predicted).
         var confusion: [Int]
-        var class5Recall: Float
-        var class5ToClass1Count: Int
-        var class5ToClass4Count: Int
-        var class5ToClass1Pct: Float
-        var class5ToClass4Pct: Float
-        var class1Recall: Float
-        var class1Precision: Float
+        var suitableRecall: Float
+        /// Suitable → Unsuitable — the worst-case flip (ordinal
+        /// distance 2). Each one is a frame the curator said was
+        /// imaging-ready but the model wrote off as junk.
+        var suitableToUnsuitableCount: Int
+        /// Suitable → Partial — the adjacent miss (distance 1).
+        var suitableToPartialCount: Int
+        var suitableToUnsuitablePct: Float
+        var suitableToPartialPct: Float
+        var unsuitableRecall: Float
+        var unsuitablePrecision: Float
         var durationSeconds: Double
         var sampleCount: Int
         /// Mean absolute error in class-index units, computed over
-        /// the CV confusion matrix. 0 = perfect predictions; 4 =
-        /// every prediction flipped class-5 ↔ class-1. 0.7.4 addition
-        /// — the earlier composite score treated all disagreements
-        /// as equal, but RatingClass is totally ordered (cloudiness
-        /// is monotonic), so an adjacent miss (5 → 4) is much less
-        /// bad than an extreme flip (5 → 1) and should score
-        /// accordingly.
+        /// the CV confusion matrix. 0 = perfect; 2 = every
+        /// prediction flipped suitable ↔ unsuitable. 0.7.4-era
+        /// metric — still applies because ordinal distance in the
+        /// 3-class scheme just has a smaller max (2 instead of 4).
         var meanAbsError: Float
 
-        /// Composite target — higher is better, on [0, 1]. Uses the
-        /// ordinal distance penalty instead of the old binary-miss
-        /// penalty so a model that slips 5 → 4 is rewarded over one
-        /// that flips 5 → 1 at the same overall accuracy. Simple
-        /// form: `1 − MAE / 4`. A perfect model scores 1.0; random
-        /// 5-class guessing scores ~0.5.
+        /// Composite target on [0, 1]. Still distance-aware:
+        /// `1 − MAE / 2`. A perfect model scores 1.0; always-wrong
+        /// (suitable ↔ unsuitable for every row) scores 0.0.
         var compositeScore: Float {
-            max(0, 1 - meanAbsError / 4)
+            max(0, 1 - meanAbsError / 2)
         }
     }
 
@@ -438,20 +436,23 @@ final class ClassifierEngine: ObservableObject {
             let duration = Date().timeIntervalSince(started)
 
             let confusion = result.cv?.confusion ?? [Int](repeating: 0, count: kSnap * kSnap)
-            let cls5Row = (4 * kSnap)..<(5 * kSnap)
-            let row5 = Array(confusion[cls5Row])
-            let row1 = Array(confusion[0..<kSnap])
-            let c5Support = max(1, row5.reduce(0, +))
-            let c1Support = max(1, row1.reduce(0, +))
-            let c5Correct = row5[4]
-            let c5ToC1 = row5[0]
-            let c5ToC4 = row5[3]
-            let c1Correct = row1[0]
-            // Class-1 precision: column sum for predicted=1, diagonal / sum.
-            var col1Sum = 0
-            for r in 0..<kSnap { col1Sum += confusion[r * kSnap + 0] }
-            let c1Precision: Float = col1Sum > 0
-                ? Float(c1Correct) / Float(col1Sum)
+            // In the 3-class scheme, index 2 = suitable (RatingClass
+            // rawValue 3), index 0 = unsuitable (rawValue 1). The
+            // old "class5 leak" semantics now map to "suitable leak".
+            let suitableRow = Array(confusion[(2 * kSnap)..<(3 * kSnap)])
+            let unsuitableRow = Array(confusion[0..<kSnap])
+            let sSupport = max(1, suitableRow.reduce(0, +))
+            let uSupport = max(1, unsuitableRow.reduce(0, +))
+            let sCorrect = suitableRow[2]
+            let sToUnsuitable = suitableRow[0]  // distance-2 flip
+            let sToPartial    = suitableRow[1]  // distance-1 slip
+            let uCorrect = unsuitableRow[0]
+            // Unsuitable precision — column-sum for predicted=0,
+            // diagonal / sum.
+            var col0Sum = 0
+            for r in 0..<kSnap { col0Sum += confusion[r * kSnap + 0] }
+            let uPrecision: Float = col0Sum > 0
+                ? Float(uCorrect) / Float(col0Sum)
                 : 0
 
             let mae = Self.meanAbsError(confusion: confusion, numClasses: kSnap)
@@ -463,13 +464,13 @@ final class ClassifierEngine: ObservableObject {
                     cvAccuracy: result.cv?.accuracy ?? 0,
                     trainAccuracy: result.fit.accuracy,
                     confusion: confusion,
-                    class5Recall: Float(c5Correct) / Float(c5Support),
-                    class5ToClass1Count: c5ToC1,
-                    class5ToClass4Count: c5ToC4,
-                    class5ToClass1Pct: Float(c5ToC1) / Float(c5Support),
-                    class5ToClass4Pct: Float(c5ToC4) / Float(c5Support),
-                    class1Recall: Float(c1Correct) / Float(c1Support),
-                    class1Precision: c1Precision,
+                    suitableRecall: Float(sCorrect) / Float(sSupport),
+                    suitableToUnsuitableCount: sToUnsuitable,
+                    suitableToPartialCount: sToPartial,
+                    suitableToUnsuitablePct: Float(sToUnsuitable) / Float(sSupport),
+                    suitableToPartialPct: Float(sToPartial) / Float(sSupport),
+                    unsuitableRecall: Float(uCorrect) / Float(uSupport),
+                    unsuitablePrecision: uPrecision,
                     durationSeconds: duration,
                     sampleCount: scaledSamples.count,
                     meanAbsError: mae
@@ -486,6 +487,10 @@ final class ClassifierEngine: ObservableObject {
     /// weight boost, and hidden-dim. Kept compact so the full sweep
     /// finishes in ~30–60 s on a Release build.
     static func defaultSweepGrid() -> [SweepConfig] {
+        // 0.8.0 grid — class-boost vectors are now 3-wide. The
+        // "suitable-class boost" in the named configs is
+        // `classBoosts[2]` (RatingClass.suitable), the old class5
+        // slot. "Unsuitable boost" = `classBoosts[0]`.
         [
             SweepConfig(name: "baseline"),
             SweepConfig(name: "moon×10",  moonVisibilityScale: 10),
@@ -503,13 +508,13 @@ final class ClassifierEngine: ObservableObject {
                 reflectionRiskScale: 50
             ),
             SweepConfig(
-                name: "class5 1.5× + moon×10",
-                classBoosts: [1.0, 1.0, 1.0, 1.0, 1.5],
+                name: "suitable 1.5× + moon×10",
+                classBoosts: [1.0, 1.0, 1.5],
                 moonVisibilityScale: 10
             ),
             SweepConfig(
-                name: "class5 2.0× + moon×50",
-                classBoosts: [1.0, 1.0, 1.0, 1.0, 2.0],
+                name: "suitable 2.0× + moon×50",
+                classBoosts: [1.0, 1.0, 2.0],
                 moonVisibilityScale: 50
             ),
             SweepConfig(name: "hidden 256", hiddenDim: 256),
@@ -525,7 +530,7 @@ final class ClassifierEngine: ObservableObject {
             ),
             SweepConfig(
                 name: "aggro",
-                classBoosts: [1.0, 1.0, 1.0, 1.0, 1.8],
+                classBoosts: [1.0, 1.0, 1.8],
                 hiddenDim: 256,
                 iterations: 400,
                 moonVisibilityScale: 50,

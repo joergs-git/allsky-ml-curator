@@ -419,46 +419,60 @@ final class AppSettings {
         set { defaults.set(newValue, forKey: Key.mlpHiddenDim) }
     }
 
-    /// Multiplicative boost applied per RatingClass (1…5) on top of
-    /// inverse-frequency weighting. `[0]` is class 1 (full clouds),
-    /// `[4]` is class 5 (clear).
-    ///
-    /// Replaces the single `clearClassBoost` knob in 0.4.2 — in
-    /// practice the *under-represented* class on a given library
-    /// isn't always 4 + 5. At Rheine a 14.9k-label dataset collapsed
-    /// class 1 to 3 % recall because the blanket "boost 4 + 5" rule
-    /// over-weighted bright overcast samples that visually resembled
-    /// class 5, turning every class-1 sample into low-priority
-    /// gradient noise. A per-class vector lets the curator lift the
-    /// actually-failing class without collateral damage.
-    ///
-    /// Migration (0.4.1 → 0.4.2): when the new per-class keys are
-    /// absent but the legacy `ml.clearClassBoost` was set, return
-    /// `[1, 1, 1, legacy, legacy]` so an existing install keeps its
-    /// previous behaviour across the upgrade. Otherwise default to
-    /// all-ones (pure inverse-frequency).
+    /// Multiplicative boost applied per RatingClass on top of
+    /// inverse-frequency weighting. 0.8.0 collapsed the vector
+    /// from 5 to 3 slots — `[0]` = unsuitable, `[1]` = partial,
+    /// `[2]` = suitable. Legacy 5-slot values from pre-0.8 installs
+    /// are migrated symmetrically on first read:
+    ///   newSuitable    = mean(old[3], old[4])
+    ///   newPartial     = old[2]
+    ///   newUnsuitable  = mean(old[0], old[1])
+    /// so a curator who tuned the old clear-sky boost keeps
+    /// roughly-equivalent behaviour across the bump.
     var classWeightBoosts: [Double] {
         get {
-            if defaults.object(forKey: Key.classBoost1) != nil {
-                return (0..<5).map { i in
-                    defaults.double(forKey: Self.classBoostKey(i), default: 1.0)
+            // Prefer fresh 3-slot keys (classBoost3ClassX) when the
+            // user touched them post-0.8.
+            if defaults.object(forKey: Key.classBoost3C1) != nil {
+                return (0..<3).map { i in
+                    defaults.double(forKey: Self.classBoost3Key(i), default: 1.0)
                 }
+            }
+            // Migrate the old 5-slot keys if they exist.
+            if defaults.object(forKey: Key.classBoost1) != nil {
+                let old = (0..<5).map { i in
+                    defaults.double(forKey: Self.classBoost5Key(i), default: 1.0)
+                }
+                return [
+                    (old[0] + old[1]) / 2,     // 1,2 → unsuitable
+                    old[2],                     // 3   → partial
+                    (old[3] + old[4]) / 2      // 4,5 → suitable
+                ]
             }
             if defaults.object(forKey: Key.clearBoost) != nil {
                 let legacy = defaults.double(forKey: Key.clearBoost)
-                return [1.0, 1.0, 1.0, legacy, legacy]
+                return [1.0, 1.0, legacy]
             }
-            return [1.0, 1.0, 1.0, 1.0, 1.0]
+            return [1.0, 1.0, 1.0]
         }
         set {
-            let values = Array(newValue.prefix(5))
+            let values = Array(newValue.prefix(3))
             for (i, v) in values.enumerated() {
-                defaults.set(v, forKey: Self.classBoostKey(i))
+                defaults.set(v, forKey: Self.classBoost3Key(i))
             }
         }
     }
 
-    private static func classBoostKey(_ index: Int) -> String {
+    private static func classBoost3Key(_ index: Int) -> String {
+        switch index {
+        case 0: return Key.classBoost3C1
+        case 1: return Key.classBoost3C2
+        case 2: return Key.classBoost3C3
+        default: return Key.classBoost3C1
+        }
+    }
+
+    private static func classBoost5Key(_ index: Int) -> String {
         switch index {
         case 0: return Key.classBoost1
         case 1: return Key.classBoost2
@@ -482,6 +496,9 @@ final class AppSettings {
         defaults.removeObject(forKey: Key.classBoost3)
         defaults.removeObject(forKey: Key.classBoost4)
         defaults.removeObject(forKey: Key.classBoost5)
+        defaults.removeObject(forKey: Key.classBoost3C1)
+        defaults.removeObject(forKey: Key.classBoost3C2)
+        defaults.removeObject(forKey: Key.classBoost3C3)
         defaults.removeObject(forKey: Key.mlpHiddenDim)
         defaults.removeObject(forKey: Key.featureMoonScale)
         defaults.removeObject(forKey: Key.featureSunScale)
@@ -523,11 +540,20 @@ final class AppSettings {
         static let autonomousMin = "autonomous.minLabels"
         static let autonomousConfidence = "autonomous.confidenceThreshold"
         static let clearBoost = "ml.clearClassBoost"  // legacy — kept for migration
+        // Legacy 5-slot keys — read-only now, migrated into the
+        // 3-slot scheme on first read. Kept so an old install isn't
+        // orphaned.
         static let classBoost1 = "ml.classBoost.1"
         static let classBoost2 = "ml.classBoost.2"
         static let classBoost3 = "ml.classBoost.3"
         static let classBoost4 = "ml.classBoost.4"
         static let classBoost5 = "ml.classBoost.5"
+        // 0.8.0 3-slot keys. Distinct namespace so first-launch-post-
+        // upgrade code can tell "user tuned new scheme" from "has old
+        // 5-slot values to migrate".
+        static let classBoost3C1 = "ml.classBoost3c.1"
+        static let classBoost3C2 = "ml.classBoost3c.2"
+        static let classBoost3C3 = "ml.classBoost3c.3"
         static let trainingLR = "ml.learningRate"
         static let trainingIter = "ml.iterations"
         static let trainingL2 = "ml.l2"

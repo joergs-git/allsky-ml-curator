@@ -4,6 +4,80 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.8.0] — 2026-04-22
+
+**RatingClass collapsed from 5 to 3 values.** The 5-class
+meteorological-okta scheme (full clouds → mostly → some → thin →
+clear) produced unresolvable label ambiguity on half the frames —
+"50 % horizon cloud but clear zenith" / "flat thin overcast with
+stars showing through" / "fog with stars visible" have no
+unambiguous okta mapping. The 3-class scheme asks the only
+question the downstream consumers actually care about: **can I
+image through this?**
+
+### Added
+- New `RatingClass` values: `unrated` (0), **unsuitable** (1,
+  don't image), **partial** (2, mosaic / wide-field only),
+  **suitable** (3, full-quality imaging).
+- Colour-pill rating badge on matrix tiles — red / amber / green
+  capsule with the class digit in bold white, replacing the 1…5
+  star cluster. Reads at a glance at any grid size, and matches
+  traffic-light intuition.
+- `RatingClass.distance(to:)` still present but now maxes at 2
+  instead of 4. Distance-aware mismatch borders simplify to amber
+  (distance 1, adjacent slip) → red (distance 2, extreme flip).
+- **Three prominent colour-pills** in the Inspection rating hero —
+  filled for the current rating, outlined for the alternatives.
+  Same keyboard: 1 / 2 / 3 toggle, 0 clears, 4 / 5 swallowed so
+  old muscle memory doesn't write garbage.
+
+### Migration
+- **Migration v8** (`v8_remap_rating_classes_to_three_class`)
+  runs automatically at first launch. Single atomic `CASE` remap
+  of every existing `labels.ratingClass`:
+  - old {1, 2} (full + mostly) → **1 (unsuitable)**
+  - old {3}    (some)            → **2 (partial)**
+  - old {4, 5} (thin + clear)    → **3 (suitable)**
+- Per-class boosts migrate symmetrically:
+  `new[unsuitable] = mean(old[0], old[1])`,
+  `new[partial] = old[2]`,
+  `new[suitable] = mean(old[3], old[4])`.
+- Existing classifier blobs (`CMLW v2`, numClasses = 5) rejected
+  by `decodeWeights` since the header's numClasses no longer
+  matches runtime (3). Silent fallback to "untrained"; ⌘T
+  retrains on the new 3-class target.
+
+### Changed
+- `ClassifierEngine.numClasses = 3`. `SweepResult` fields renamed:
+  `class5Recall → suitableRecall`,
+  `class5ToClass1Count → suitableToUnsuitableCount` (distance-2
+  flip), `class5ToClass4Count → suitableToPartialCount`
+  (distance-1 slip), `class1Recall → unsuitableRecall`,
+  `class1Precision → unsuitablePrecision`.
+- Composite score: `1 − MAE / 2` (max MAE is now 2 instead of 4).
+  Typical good-model scores ~0.85–0.97. Prior 0.7.x scores are
+  not comparable — different denominator.
+- All sweep preset names updated — "class5 2.0×" became
+  "suitable 2.0×"; classBoost vectors inside presets shrunk to 3
+  slots.
+- Rating filter pulldown: `Only ★` / `Only ★★★★★` entries become
+  `Only 1 — unsuitable` / `Only 2 — partial` / `Only 3 — suitable`.
+- Keyboard cheat-sheet in Inspection updated: 1 / 2 / 3 rates
+  explicitly, 0 clears, 4 / 5 silently ignored.
+- InfoSidePanel class-count rows: three rows in
+  suitable → partial → unsuitable order with colour-pill badges
+  matching the matrix tiles.
+
+### Rationale
+The meteorological-okta granularity turned out to be the #1
+source of label noise in the 0.5.x → 0.7.x audit cycle. Neither
+human nor classifier could consistently resolve border cases
+between adjacent classes. Collapsing to 3 classes along the
+actual decision axis (can-I-image?) removes that ambiguity,
+raises the theoretical accuracy ceiling, and matches how
+AstroTriage-blinkV2 and the CloudWatcher threshold-tuner want to
+consume the labels downstream.
+
 ## [0.7.6] — 2026-04-22
 
 ### Fixed

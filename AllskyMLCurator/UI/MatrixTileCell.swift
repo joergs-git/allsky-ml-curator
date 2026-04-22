@@ -357,20 +357,22 @@ struct MatrixTileCell: View {
             .help(tooltip)
     }
 
-    /// 1..5 stars in the tier color, with a dark background plate so
-    /// they read over bright sky content too.
+    /// 0.8.0 rating badge: a filled capsule in the tier colour
+    /// (red = 1 unsuitable, amber = 2 partial, green = 3 suitable)
+    /// with the class digit in bold white inside. Replaces the
+    /// 1…5-star badge — the 3-class scheme demands a glanceable
+    /// colour-first indicator rather than a dense star count that
+    /// was starting to read as noise at 6-column grid sizes.
     private var starsBadge: some View {
-        HStack(spacing: 1) {
-            ForEach(0..<ratingClass.rawValue, id: \.self) { _ in
-                Image(systemName: "star.fill")
-                    .font(.system(size: 12, weight: .black))
-                    .foregroundStyle(tierColor)
-            }
-        }
-        .padding(.horizontal, 5)
-        .padding(.vertical, 2)
-        .background(Color.black.opacity(0.72))
-        .clipShape(RoundedRectangle(cornerRadius: 4))
+        Text("\(ratingClass.rawValue)")
+            .font(.system(size: 13, weight: .black, design: .rounded))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 2)
+            .background(tierColor)
+            .clipShape(Capsule())
+            .overlay(Capsule().stroke(Color.black.opacity(0.35), lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.35), radius: 1, y: 1)
     }
 
     private func flagBadge(_ text: String, color: Color) -> some View {

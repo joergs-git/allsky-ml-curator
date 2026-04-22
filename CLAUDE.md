@@ -1,7 +1,7 @@
 # Allsky-ML-Curator — Claude Code Master Document
 
 > Native macOS (Apple Silicon, Metal-accelerated) image curator with on-device ML.
-> **Version:** 0.7.6 — rate → retrain → inspect-mismatches → auto-rate → targeted re-ingest → remove-wrong-ones workflow is end-to-end. Classifier is a two-layer MLP (hidden dim tunable in Preferences); training runs on a detached task so the UI stays responsive during ⌘T; night-only filter soft-hides day / twilight frames from matrix + training; rated tiles where the model disagrees get a dashed orange border + predicted-class badge and can be filtered to as a dedicated rating-filter view; embedding warmer is a start/stop toggle on the Embeddings chip; per-tile moon + auto-reflection risk icons (moon threshold tunable in Preferences, default 30°); class weighting is a per-class boost vector.
+> **Version:** 0.8.0 — RatingClass collapsed from 5 values (okta-style cloudiness) to 3 values (unsuitable / partial / suitable for astro imaging). Symmetric migration, colour-pill badges. — rate → retrain → inspect-mismatches → auto-rate → targeted re-ingest → remove-wrong-ones workflow is end-to-end. Classifier is a two-layer MLP (hidden dim tunable in Preferences); training runs on a detached task so the UI stays responsive during ⌘T; night-only filter soft-hides day / twilight frames from matrix + training; rated tiles where the model disagrees get a dashed orange border + predicted-class badge and can be filtered to as a dedicated rating-filter view; embedding warmer is a start/stop toggle on the Embeddings chip; per-tile moon + auto-reflection risk icons (moon threshold tunable in Preferences, default 30°); class weighting is a per-class boost vector.
 
 ---
 
@@ -17,7 +17,7 @@
 
 ## Project summary
 
-A keyboard-first macOS tool for rating allsky 360° sky imagery with live-learning ML assistance. A curator blasts through hundreds of frames per session — each rated 0 (unrated) / 1 (full clouds) / 2 (mostly) / 3 (some clouds) / 4 (little / thin) / 5 (clear), with orthogonal flags `R` (reflection visible) and `T` (transitional / gain-settling frame). A BNNS-backed logistic-regression classifier retrains after every commit on top of frozen Apple Vision feature-print embeddings, so the next matrix page arrives with prediction overlays the curator can confirm or override. An autonomous auto-rate mode (⌘⇧A) can stream high-confidence predictions into unrated tiles.
+A keyboard-first macOS tool for rating allsky 360° sky imagery with live-learning ML assistance. A curator blasts through hundreds of frames per session — each rated 0 (unrated) / 1 (unsuitable — don't image) / 2 (partial — mosaic / wide-field only) / 3 (suitable — full-quality imaging), with orthogonal flags `R` (reflection visible) and `T` (transitional / gain-settling frame). The 3-class scheme landed in 0.8.0 after the prior 5-class meteorological-okta granularity produced unresolvable label ambiguity on border cases. A 2-layer MLP (Apple Accelerate `cblas_sgemm`) retrains after every commit on top of frozen Apple Vision feature-print embeddings, so the next matrix page arrives with prediction overlays the curator can confirm or override. An autonomous auto-rate mode (⌘⇧A) can stream high-confidence predictions into unrated tiles.
 
 The labeled dataset has three downstream consumers:
 1. Dynamic seasonal threshold tuning of the AAG CloudWatcher Solo clear/cloudy sky-temperature boundary (the primary "real" goal — deferred, not active work).

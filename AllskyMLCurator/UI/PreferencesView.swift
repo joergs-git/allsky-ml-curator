@@ -476,10 +476,10 @@ struct PreferencesView: View {
             }
 
             Section("Per-class boost (× inverse-frequency)") {
-                ForEach(0..<5, id: \.self) { index in
+                ForEach(0..<3, id: \.self) { index in
                     classBoostRow(index: index)
                 }
-                Text("Each slider is a multiplier on top of inverse-frequency weighting. Start every class at 1.0× for pure balance. If a class keeps losing its share of the gradient (low recall despite many samples), raise *that* class. If a class gets over-predicted, lower it. The 0.4.1 default boosted classes 4 + 5 blindly, which collapsed class 1 on Rheine's library; 0.4.2 switches to a per-class vector so the knob targets the actual failure.")
+                Text("Multiplier on top of inverse-frequency weighting, one per RatingClass (0.8.0 switched from 5 to 3 classes — unsuitable / partial / suitable). Start every class at 1.0× for pure balance. If a class keeps losing its share of the gradient (low recall despite many samples), raise *that* class. If a class gets over-predicted, lower it.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -593,9 +593,11 @@ struct PreferencesView: View {
         }
     }
 
-    /// One row in the per-class boost slider section. Lazily clamps
-    /// `classBoosts.count` to 5 so the binding is safe even if the
-    /// stored vector was ever truncated.
+    /// One row in the per-class boost slider section. Lazily pads
+    /// `classBoosts` up to `index + 1` so the binding is safe even
+    /// if the stored vector is shorter than the current numClasses
+    /// (e.g. a 0.8.0 upgrade that hasn't yet migrated the legacy
+    /// 5-slot settings).
     @ViewBuilder private func classBoostRow(index: Int) -> some View {
         let binding = Binding<Double>(
             get: {
@@ -620,11 +622,9 @@ struct PreferencesView: View {
 
     private func classBoostLabel(for index: Int) -> String {
         switch index {
-        case 0: return "1 · full clouds"
-        case 1: return "2 · mostly clouds"
-        case 2: return "3 · some clouds"
-        case 3: return "4 · little / thin"
-        case 4: return "5 · clear"
+        case 0: return "1 · unsuitable"
+        case 1: return "2 · partial"
+        case 2: return "3 · suitable"
         default: return "class \(index + 1)"
         }
     }

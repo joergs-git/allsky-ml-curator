@@ -457,12 +457,13 @@ struct MatrixView: View {
         }
 
         switch press.characters {
-        case "0": applyRatingConsumingPending(.unrated);   return .handled
-        case "1": applyRatingConsumingPending(.fullCloud); return .handled
-        case "2": applyRatingConsumingPending(.mostly);    return .handled
-        case "3": applyRatingConsumingPending(.some);      return .handled
-        case "4": applyRatingConsumingPending(.thin);      return .handled
-        case "5": applyRatingConsumingPending(.clear);     return .handled
+        case "0": applyRatingConsumingPending(.unrated);    return .handled
+        case "1": applyRatingConsumingPending(.unsuitable); return .handled
+        case "2": applyRatingConsumingPending(.partial);    return .handled
+        case "3": applyRatingConsumingPending(.suitable);   return .handled
+        // 4 / 5 are no-ops in the 0.8.0 3-class scheme — swallowed
+        // so accidental presses (muscle memory) don't propagate.
+        case "4", "5": return .handled
         case "r", "R": toggleFlag(.reflection);   return .handled
         case "t", "T": toggleFlag(.transitional); return .handled
         case "q", "Q":

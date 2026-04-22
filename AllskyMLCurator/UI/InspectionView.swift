@@ -310,74 +310,77 @@ struct InspectionView: View {
         }
     }
 
-    /// Big prominent rating card on the right pane. Shows the
-    /// current class as five stars at ~22 pt — the same visual
-    /// language as the matrix tile but at a size that reads from
-    /// across the room — plus coverage hint, source, flags. When
-    /// the frame is unrated the whole card is greyed and a helper
-    /// line nudges the curator to press 0-5. The ⌘T / ⌘⇧A etc.
-    /// shortcuts aren't surfaced here because we're focused on
-    /// per-frame rating.
+    /// Big prominent rating card. 0.8.0 version shows the three
+    /// colour-pill options (1 red unsuitable, 2 amber partial,
+    /// 3 green suitable) with the current selection filled and the
+    /// others outlined — mirrors the matrix-tile colour metaphor
+    /// at a size that reads from across the room.
     private var ratingHero: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("Rating")
-            if let item = currentItem, let label = item.label,
-               label.ratingClass != .unrated {
-                let cls = label.ratingClass
-                HStack(spacing: 4) {
-                    ForEach(0..<cls.rawValue, id: \.self) { _ in
-                        Image(systemName: "star.fill")
-                            .font(.system(size: 22, weight: .black))
-                            .foregroundStyle(
-                                AppColors.tier(cls, night: nightMode)
-                            )
-                    }
-                    ForEach(cls.rawValue..<5, id: \.self) { _ in
-                        Image(systemName: "star")
-                            .font(.system(size: 22, weight: .regular))
-                            .foregroundStyle(
-                                AppColors.fgDim(nightMode).opacity(0.5)
-                            )
-                    }
-                }
-                Text("\(cls.rawValue) — \(cls.shortName)  ·  \(cls.coverageHint)")
+            let currentCls: RatingClass = currentItem?.label?.ratingClass ?? .unrated
+            HStack(spacing: 10) {
+                ratingPill(.unsuitable, current: currentCls)
+                ratingPill(.partial, current: currentCls)
+                ratingPill(.suitable, current: currentCls)
+            }
+            if currentCls != .unrated {
+                Text("\(currentCls.rawValue) — \(currentCls.shortName)  ·  \(currentCls.coverageHint)")
                     .font(.body.weight(.semibold))
-                    .foregroundStyle(AppColors.tier(cls, night: nightMode))
-                metaRow("Source", label.source.rawValue)
-                metaRow("Sample weight", String(format: "%.2f", label.sampleWeight))
-                HStack(spacing: 8) {
-                    if label.reflectionFlag {
-                        flagChip("R", color: AppColors.reflectionFlag(nightMode))
+                    .foregroundStyle(AppColors.tier(currentCls, night: nightMode))
+                if let label = currentItem?.label {
+                    metaRow("Source", label.source.rawValue)
+                    metaRow("Sample weight", String(format: "%.2f", label.sampleWeight))
+                    HStack(spacing: 8) {
+                        if label.reflectionFlag {
+                            flagChip("R", color: AppColors.reflectionFlag(nightMode))
+                        }
+                        if label.transitionalFlag {
+                            flagChip("T", color: AppColors.transitionalFlag(nightMode))
+                        }
+                        if !label.reflectionFlag && !label.transitionalFlag {
+                            Text("no flags")
+                                .font(.caption)
+                                .foregroundStyle(AppColors.fgDim(nightMode))
+                        }
                     }
-                    if label.transitionalFlag {
-                        flagChip("T", color: AppColors.transitionalFlag(nightMode))
-                    }
-                    if !label.reflectionFlag && !label.transitionalFlag {
-                        Text("no flags")
-                            .font(.caption)
-                            .foregroundStyle(AppColors.fgDim(nightMode))
-                    }
+                    .padding(.top, 2)
                 }
-                .padding(.top, 2)
             } else {
-                HStack(spacing: 4) {
-                    ForEach(0..<5, id: \.self) { _ in
-                        Image(systemName: "star")
-                            .font(.system(size: 22))
-                            .foregroundStyle(
-                                AppColors.fgDim(nightMode).opacity(0.35)
-                            )
-                    }
-                }
                 Text("UNRATED")
                     .font(.headline.weight(.black))
                     .foregroundStyle(AppColors.fgDim(nightMode))
-                Text("Press 0-5 to rate this frame, R / T to flag, ←/→ to move to the next tile.")
+                Text("Press 1 / 2 / 3 to rate this frame, R / T to flag, ←/→ to move to the next tile.")
                     .font(.caption)
                     .foregroundStyle(AppColors.fgDim(nightMode))
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    /// One large pill in the rating hero. Filled + white digit when
+    /// it matches the tile's current rating, tinted outline only
+    /// otherwise so the unselected options read as clickable
+    /// alternatives (even though they're actually keyboard-only).
+    private func ratingPill(_ cls: RatingClass, current: RatingClass) -> some View {
+        let isSelected = cls == current
+        let tier = AppColors.tier(cls, night: nightMode)
+        return Text("\(cls.rawValue)")
+            .font(.system(size: 24, weight: .heavy, design: .rounded))
+            .foregroundStyle(isSelected ? .white : tier)
+            .frame(width: 52, height: 42)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(isSelected ? tier : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(tier, lineWidth: isSelected ? 0 : 2)
+            )
+            .shadow(
+                color: isSelected ? .black.opacity(0.3) : .clear,
+                radius: 2, y: 1
+            )
     }
 
     private func flagChip(_ symbol: String, color: Color) -> some View {
@@ -398,7 +401,8 @@ struct InspectionView: View {
         VStack(alignment: .leading, spacing: 6) {
             sectionTitle("Keyboard")
             VStack(alignment: .leading, spacing: 3) {
-                keyLine("0 - 5", "Apply rating (class)")
+                keyLine("1 / 2 / 3", "Rate unsuitable / partial / suitable")
+                keyLine("0", "Clear rating")
                 keyLine("R", "Toggle reflection flag")
                 keyLine("T", "Toggle transitional flag")
                 keyLine("Q / C", "Arm quick / certain for next digit")
@@ -428,7 +432,7 @@ struct InspectionView: View {
         VStack(alignment: .leading, spacing: 6) {
             sectionTitle("Classifier prediction")
             if let prediction {
-                ForEach(0..<5, id: \.self) { rawMinusOne in
+                ForEach(0..<3, id: \.self) { rawMinusOne in
                     let cls = RatingClass(rawValue: rawMinusOne + 1) ?? .unrated
                     let prob = prediction.probabilities.indices.contains(rawMinusOne)
                         ? prediction.probabilities[rawMinusOne]
@@ -528,12 +532,14 @@ struct InspectionView: View {
         }
 
         switch press.characters {
-        case "0": applyRating(.unrated,   to: id);   return .handled
-        case "1": applyRating(.fullCloud, to: id);   return .handled
-        case "2": applyRating(.mostly,    to: id);   return .handled
-        case "3": applyRating(.some,      to: id);   return .handled
-        case "4": applyRating(.thin,      to: id);   return .handled
-        case "5": applyRating(.clear,     to: id);   return .handled
+        case "0": applyRating(.unrated,    to: id);   return .handled
+        case "1": applyRating(.unsuitable, to: id);   return .handled
+        case "2": applyRating(.partial,    to: id);   return .handled
+        case "3": applyRating(.suitable,   to: id);   return .handled
+        // 4 / 5 are no-ops in the 0.8.0 3-class scheme — swallowed
+        // so they don't propagate to any other handler and surprise
+        // the curator. Could beep if we wanted.
+        case "4", "5": return .handled
         case "r", "R":
             Task {
                 await ImageLibrary.shared.toggleReflection(forImageIds: [id])

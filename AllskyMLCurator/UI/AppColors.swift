@@ -68,21 +68,15 @@ enum AppColors {
             // rated ones pop against them.
             return night ? Color(red: 0.05, green: 0, blue: 0)
                          : Color(white: 0.18)
-        case .fullCloud:  // 1 — saturated red
-            return night ? Color(red: 0.40, green: 0, blue: 0)
-                         : Color(red: 0.95, green: 0.12, blue: 0.12)
-        case .mostly:    // 2 — bold orange
-            return night ? Color(red: 0.55, green: 0, blue: 0)
-                         : Color(red: 1.00, green: 0.55, blue: 0.05)
-        case .some:      // 3 — bright yellow
+        case .unsuitable:  // 1 — saturated red (don't image)
+            return night ? Color(red: 0.50, green: 0, blue: 0)
+                         : Color(red: 0.92, green: 0.20, blue: 0.18)
+        case .partial:     // 2 — amber (borderline)
             return night ? Color(red: 0.75, green: 0, blue: 0)
-                         : Color(red: 1.00, green: 0.87, blue: 0.00)
-        case .thin:      // 4 — teal (distinct hue from the green of .clear)
-            return night ? Color(red: 0.85, green: 0, blue: 0)
-                         : Color(red: 0.00, green: 0.78, blue: 0.73)
-        case .clear:     // 5 — bright green
+                         : Color(red: 0.98, green: 0.70, blue: 0.10)
+        case .suitable:    // 3 — bright green (imaging-ready)
             return night ? Color(red: 1.00, green: 0, blue: 0)
-                         : Color(red: 0.00, green: 0.85, blue: 0.25)
+                         : Color(red: 0.10, green: 0.78, blue: 0.30)
         }
     }
 

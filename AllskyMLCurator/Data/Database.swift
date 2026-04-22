@@ -228,6 +228,38 @@ final class Database {
             }
         }
 
+        // 0.8.0 — collapse the 5-class rating scheme into 3 classes
+        // symmetrically so the curator doesn't have to resolve the
+        // "3 or 4?" / "2 or 1?" ambiguity on every borderline tile.
+        //   {1, 2}  -> 1 (unsuitable)
+        //   {3}     -> 2 (partial)
+        //   {4, 5}  -> 3 (suitable)
+        // Lossless given the fixed mapping; per-label fine-tuning
+        // can be done post-migration via the mismatch-audit
+        // workflow. Only touches `labels.ratingClass`; image rows,
+        // embeddings and model_versions stay as they were.
+        // Persisted classifier weights auto-invalidate next launch
+        // because the numClasses field in the CMLW v2 header now
+        // reads 3 while stored blobs carry 5 — silent fallback to
+        // "untrained" on restore, user hits ⌘T once.
+        migrator.registerMigration("v8_remap_rating_classes_to_three_class") { db in
+            // Single CASE statement so the remap is atomic — if we
+            // issued separate UPDATEs in sequence, e.g. `5→3` then
+            // `3→2`, rows that were originally 5 would cascade
+            // through into 2 which is wrong. CASE evaluates each row
+            // once against the original value.
+            try db.execute(sql: """
+                UPDATE labels SET ratingClass = CASE
+                    WHEN ratingClass IN (1, 2) THEN 1
+                    WHEN ratingClass = 3        THEN 2
+                    WHEN ratingClass IN (4, 5) THEN 3
+                    ELSE ratingClass
+                END
+                WHERE ratingClass BETWEEN 1 AND 5
+            """)
+            // ratingClass = 0 (unrated) and NULL stay untouched.
+        }
+
         return migrator
     }
 }
