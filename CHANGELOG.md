@@ -4,6 +4,20 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.7.3] — 2026-04-22
+
+### Changed
+- **Split mismatch filter out of `RatingFilter`** into an orthogonal
+  toggle next to the rating pulldown. Before: one pulldown entry
+  "Only mismatches" was mutually exclusive with the 1-5 star rating
+  filters. After: independent ⚠-icon toggle that composes with any
+  rating filter — e.g. "Only ★★★★★" + Mismatches on = audit just
+  the class-5 leaks. "Any rating" + Mismatches on = full audit set
+  across all classes (previous behaviour).
+- `RatingFilter` enum loses its `.mismatches` case; the toggle is
+  now a plain `@State var onlyMismatches: Bool` in `ContentView`,
+  applied as a post-fetch predicate in `reload()`.
+
 ## [0.7.2] — 2026-04-22
 
 ### Added

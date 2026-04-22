@@ -21,6 +21,12 @@ struct ContentView: View {
         return nil    // user explicitly picked "All cameras" previously
     }()
     @State private var ratingFilter: RatingFilter = .any
+    /// Independent "only mismatches" toggle — composes with
+    /// `ratingFilter` so the curator can e.g. audit only class-5
+    /// mismatches by combining Filter = "Only ★★★★★ clear" +
+    /// Mismatches = on. Not persisted across launches; defaults
+    /// off so the matrix opens showing everything.
+    @State private var onlyMismatches: Bool = false
     @State private var columns: Int = 6
     @State private var viewMode: ViewMode = .matrix
 
@@ -247,13 +253,24 @@ struct ContentView: View {
             .onChange(of: ratingFilter) { _, _ in
                 Task { await reload() }
             }
+
+            // Orthogonal "only mismatches" toggle that composes with
+            // the rating filter — e.g. "Only ★★★★★" + Mismatches on
+            // shows only class-5-rated frames the classifier got
+            // wrong. A fresh retrain (tracked via summary.trainedAt)
+            // repopulates predictions, so we reload whenever the
+            // toggle is on and the classifier just finished.
+            Toggle(isOn: $onlyMismatches) {
+                Label("Mismatches", systemImage: "exclamationmark.triangle.fill")
+                    .labelStyle(.iconOnly)
+            }
+            .toggleStyle(.button)
+            .help("When on, keep only rated tiles where the classifier's top pick disagrees with the human label. Composes with the rating filter — leave Filter on 'Any rating' to audit every class, or pick a specific star count to audit just that class.")
+            .onChange(of: onlyMismatches) { _, _ in
+                Task { await reload() }
+            }
             .onChange(of: classifier.summary?.trainedAt) { _, _ in
-                // A fresh retrain repopulates `classifier.predictions`;
-                // if we're sitting on `.mismatches` the old `items`
-                // still reflect the previous model. Re-apply the
-                // post-filter so the view jumps to the new mismatch set
-                // instead of staying stale.
-                if case .mismatches = ratingFilter {
+                if onlyMismatches {
                     Task { await reload() }
                 }
             }
@@ -814,12 +831,14 @@ struct ContentView: View {
             maxSunAltDeg: maxSunAlt,
             minSunAltDeg: minSunAlt
         )
-        // `.mismatches` is the only filter whose predicate depends on
-        // in-memory classifier predictions (not persisted to SQLite),
-        // so it must be applied post-fetch. For every other filter
-        // this short-circuits after the rated check.
+        // Post-fetch mismatch filter. Decoupled from the rating
+        // filter in 0.7.3 so both can compose — `ratingFilter`
+        // restricts the DB query by class, `onlyMismatches` then
+        // picks only the rows the classifier disagrees with. The
+        // predicate lives here (not in `ImageLibrary.fetchImages`)
+        // because predictions are in-memory only.
         let filtered: [ImageLibrary.ImageListItem]
-        if case .mismatches = ratingFilter {
+        if onlyMismatches {
             let preds = classifier.predictions
             filtered = loaded.filter { item in
                 guard let rating = item.label?.ratingClass, rating != .unrated,
