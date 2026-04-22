@@ -4,6 +4,70 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.8.2] — 2026-04-22
+
+**Two classifiers instead of one** — separate MLP per camera type
+so colour OSC and monochrome don't have to share a single shared
+decision boundary through a heterogeneous 768-dim Vision
+FeaturePrint space.
+
+### Why
+0.8.1 with mono data added dropped CV from 87 % (colour-only) to
+79 % (combined). Root cause: Vision FeaturePrint was trained on
+colour imagery; mono frames cluster in a different part of the
+768-dim embedding space. A single `camera_one_hot` aux feature
+isn't enough signal for the shared MLP to internally route
+predictions per camera at our sample scale — the classifier mixes
+both distributions and under-performs on both.
+
+### Added
+- **Per-camera models** in `ClassifierEngine`: internal
+  `models: [CameraType: CameraModel]` dict. One fresh MLP for
+  `.color`, one for `.monochrome`. Each has its own weights, its
+  own `TrainingSummary`, its own `TrainingCoverage`.
+- **`⌘T` trains both cameras** sequentially in one pass. Cameras
+  with too few samples / too few distinct classes are silently
+  skipped (so a colour-only install doesn't surface "mono failed
+  to train" errors). Training dispatches to the normal detached
+  task per camera, so the UI stays reactive throughout.
+- **`predict(image:)` routes per camera** — reads
+  `image.cameraSource.cameraType`, looks up the right model from
+  the dict, falls back to nil when that camera hasn't been
+  trained yet. `recomputeAllPredictions()` does the same dispatch
+  per frame.
+- **Database migration v9** (`v9_add_model_camera_scope`) adds a
+  nullable `cameraScope TEXT` column to `model_versions`. Pre-
+  0.8.2 rows have NULL here and `restoreLatestModel()` treats them
+  as `.color` (which matches reality — legacy installs only had
+  colour data).
+- **`ModelVersionRecord.cameraScope: CameraType?`** — persisted +
+  decoded in the custom Row initialiser so the classifier table
+  can carry one row per camera per train.
+- **`restoreLatestModel()` picks latest row per camera scope** —
+  walks rows newest-first, stops when it has one per
+  CameraType.allCases. Both scopes get decoded and populated into
+  the `models` dict; the headline `summary` / `lastCoverage`
+  UI bindings prefer `.color`'s summary and fall back to
+  `.monochrome` if only mono has been trained.
+- **`loadTrainingSet(cameraType:)`** gains the per-camera filter.
+  Stacks cleanly with the existing `nightOnlyMode` /
+  `dayOnlyMode` sun-altitude predicates.
+
+### Expected behaviour
+- Colour CV returns to ~87 % (the pre-mono level); mono gets its
+  own CV number trained on mono-only samples.
+- On ⌘T you'll see two train durations add up (~10-20 s total on
+  the current Rheine dataset).
+- Old pre-0.8.2 blob survives migration as the colour model;
+  first ⌘T overwrites it per-scope.
+
+### Fixed alongside
+- Version string in the window title was stuck at 0.6.3 across
+  several 0.7.x / 0.8.x releases because `xcodegen generate`
+  wasn't part of the rebuild chain — the Info.plist kept the
+  stale `MARKETING_VERSION`. 0.8.2 rebuild forces a regenerate
+  so the title bar now matches `project.yml`.
+
 ## [0.8.1] — 2026-04-22
 
 ### Fixed

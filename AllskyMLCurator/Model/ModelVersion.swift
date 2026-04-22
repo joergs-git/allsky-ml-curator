@@ -17,6 +17,12 @@ struct ModelVersionRecord: Codable, Equatable, Sendable {
     var classifierWeights: Data
     var accuracy5FoldCV: Double?
     var notes: String?
+    /// 0.8.2: which camera this model was trained for. `nil` on
+    /// legacy rows from before the per-camera split (pre-0.8.2);
+    /// `.color` / `.mono` going forward. `restoreLatestModel()`
+    /// treats nil as `.color` since pre-0.8.2 installs only had
+    /// colour data in practice.
+    var cameraScope: CameraType?
 
     enum ClassifierType: String, Codable, Sendable {
         case logreg    = "logreg"
@@ -39,6 +45,7 @@ extension ModelVersionRecord: FetchableRecord, PersistableRecord {
         container["classifierWeights"] = classifierWeights
         container["accuracy5FoldCV"] = accuracy5FoldCV
         container["notes"] = notes
+        container["cameraScope"] = cameraScope?.rawValue
     }
 
     /// Custom row decoder — `classCounts` lives in SQLite as JSON-encoded
@@ -60,5 +67,10 @@ extension ModelVersionRecord: FetchableRecord, PersistableRecord {
         self.classifierWeights = row["classifierWeights"] ?? Data()
         self.accuracy5FoldCV = row["accuracy5FoldCV"]
         self.notes = row["notes"]
+        if let scopeRaw: String = row["cameraScope"] {
+            self.cameraScope = CameraType(rawValue: scopeRaw)
+        } else {
+            self.cameraScope = nil
+        }
     }
 }

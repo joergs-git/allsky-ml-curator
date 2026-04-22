@@ -181,17 +181,31 @@ final class ClassifierEngine: ObservableObject {
     private var hp = Hyperparameters.current()
     private let numClasses = 3    // RatingClass 1…3 (0.8.0: unsuitable / partial / suitable)
 
-    /// Trained parameters — two layers, all row-major:
-    ///  - `weights1` [featureDim × hiddenDim] and `bias1` [hiddenDim]
-    ///    feed the hidden ReLU.
-    ///  - `weights2` [hiddenDim × numClasses] and `bias2` [numClasses]
-    ///    feed the softmax.
-    private var weights1: [Float] = []
-    private var bias1: [Float] = []
-    private var weights2: [Float] = []
-    private var bias2: [Float] = []
-    private var featureDim: Int = 0
-    private var hiddenDim: Int = 0
+    /// One trained MLP per camera type (0.8.2). Vision FeaturePrint
+    /// was trained on colour imagery; mono allsky frames cluster
+    /// differently in the 768-dim embedding space, so a single
+    /// shared classifier mixes two feature distributions and
+    /// under-performs on both. Two dedicated classifiers — one for
+    /// colour, one for mono — each see a homogeneous feature space
+    /// and specialise cleanly. The single `camera_one_hot` feature
+    /// wasn't enough signal for the shared MLP to internally route
+    /// predictions per camera at our sample scale.
+    fileprivate struct CameraModel: Sendable {
+        var weights1: [Float] = []
+        var bias1: [Float] = []
+        var weights2: [Float] = []
+        var bias2: [Float] = []
+        var featureDim: Int = 0
+        var hiddenDim: Int = 0
+        var summary: TrainingSummary?
+        var lastCoverage: TrainingCoverage?
+
+        var isTrained: Bool {
+            !weights2.isEmpty && featureDim > 0 && hiddenDim > 0
+        }
+    }
+
+    private var models: [CameraType: CameraModel] = [:]
     /// Monotonically increases every time `weights` is replaced
     /// (train(), restoreLatestModel(), clear()). `recomputeAllPredictions`
     /// reads the current value before spawning its detached task and
@@ -564,9 +578,63 @@ final class ClassifierEngine: ObservableObject {
         // restart.
         hp = Hyperparameters.current()
 
+        // 0.8.2: train one model per camera type. Vision FeaturePrint
+        // represents colour and mono frames in differently-clustered
+        // subspaces; a single shared classifier mixes the two and
+        // under-performs on both. Each camera gets its own MLP,
+        // tracked in `models[cameraType]`; predict() then dispatches
+        // per frame based on `image.cameraSource.cameraType`.
+        var trainedAny = false
+        var firstError: String?
+        for cameraType in CameraType.allCases {
+            let outcome = await trainOne(cameraType: cameraType)
+            switch outcome {
+            case .trained:
+                trainedAny = true
+            case .skipped:
+                continue
+            case .failed(let message):
+                // Keep the first error but keep trying the other
+                // camera — a mono-has-one-class error shouldn't stop
+                // the color model from training.
+                firstError = firstError ?? message
+            }
+        }
+
+        if !trainedAny, let firstError {
+            lastError = firstError
+        }
+
+        // Republish the headline summary / coverage from whichever
+        // camera trained most recently (colour wins ties since the
+        // loop visits colour first). The UI uses these @Published
+        // fields; per-camera summaries are in `models[...]?.summary`
+        // for anyone who wants to drill in.
+        if let colorModel = models[.color], colorModel.summary != nil {
+            summary = colorModel.summary
+            lastCoverage = colorModel.lastCoverage
+        } else if let monoModel = models[.monochrome], monoModel.summary != nil {
+            summary = monoModel.summary
+            lastCoverage = monoModel.lastCoverage
+        }
+
+        await recomputeAllPredictions()
+    }
+
+    /// Per-camera trainer invoked by the top-level `train()`. Factored
+    /// out so the loop is tiny and the error-per-camera handling is
+    /// explicit. Returns an outcome so the caller can react
+    /// differently to "no samples, skip" vs "error, report".
+    private enum CameraTrainOutcome {
+        case trained
+        case skipped     // not enough samples / classes for this camera
+        case failed(message: String)
+    }
+
+    private func trainOne(cameraType: CameraType) async -> CameraTrainOutcome {
         do {
             let started = Date()
-            let diagnostics = try await loadTrainingSet()
+            let diagnostics = try await loadTrainingSet(cameraType: cameraType)
             let samples = diagnostics.samples
 
             var classCounts = [Int](repeating: 0, count: numClasses)
@@ -575,43 +643,21 @@ final class ClassifierEngine: ObservableObject {
             let distinctClasses = classCounts.filter { $0 > 0 }.count
             let embeddedCount = samples.count
 
-            lastCoverage = TrainingCoverage(
+            var model = models[cameraType, default: CameraModel()]
+            model.lastCoverage = TrainingCoverage(
                 totalRated: diagnostics.totalRated,
                 withEmbedding: embeddedCount,
                 classCounts: classCounts
             )
+            models[cameraType] = model
 
-            if embeddedCount == 0 {
-                throw TrainingError.noEmbeddingsAvailable(
-                    totalRated: diagnostics.totalRated
-                )
-            }
-            if distinctClasses < 2 {
-                // Tell the user whether the coverage gap (few
-                // embeddings) or the labeling spread (one class only)
-                // is the real blocker — they require different fixes.
-                if embeddedCount < diagnostics.totalRated / 2 {
-                    throw TrainingError.partialEmbeddingCoverage(
-                        withEmbedding: embeddedCount,
-                        totalRated: diagnostics.totalRated,
-                        classCounts: classCounts
-                    )
-                } else {
-                    throw TrainingError.insufficientClasses(
-                        withEmbedding: embeddedCount,
-                        totalRated: diagnostics.totalRated,
-                        classCounts: classCounts
-                    )
-                }
+            if embeddedCount == 0 || distinctClasses < 2 {
+                // Not enough data for this camera — skip silently so
+                // a curator who only rates colour frames doesn't see
+                // a "mono failed to train" error on ⌘T.
+                return .skipped
             }
 
-            // Hand the heavy math to a detached task so the MainActor
-            // (and therefore the UI) keeps running while we grind
-            // through ~200 iterations of GD + 5 CV folds. Was a
-            // silent pain in 0.4.x when the linear head took ~50 s
-            // of beach ball; with the 0.5.0 MLP the synchronous-on-
-            // MainActor implementation turned into a full-minute
-            // freeze. 0.5.1 gets it off the main thread.
             let hpSnapshot = hp
             let kSnapshot = numClasses
             let classCountsSnapshot = classCounts
@@ -648,18 +694,16 @@ final class ClassifierEngine: ObservableObject {
                 )
             }.value
 
-            // Commit onto self on MainActor.
-            self.weights1 = result.weights1
-            self.bias1 = result.bias1
-            self.weights2 = result.weights2
-            self.bias2 = result.bias2
-            self.featureDim = result.featureDim
-            self.hiddenDim = result.hiddenDim
-
             let duration = Date().timeIntervalSince(started)
             let cvResult = result.cv
 
-            summary = TrainingSummary(
+            model.weights1 = result.weights1
+            model.bias1 = result.bias1
+            model.weights2 = result.weights2
+            model.bias2 = result.bias2
+            model.featureDim = result.featureDim
+            model.hiddenDim = result.hiddenDim
+            model.summary = TrainingSummary(
                 trainedAt: Date(),
                 sampleCount: samples.count,
                 classCounts: classCounts,
@@ -675,83 +719,116 @@ final class ClassifierEngine: ObservableObject {
                 },
                 durationSeconds: duration
             )
+            models[cameraType] = model
             weightsVersion &+= 1
 
-            await recomputeAllPredictions()
-            await persistTrainedModel()
+            await persistTrainedModel(
+                cameraType: cameraType, model: model
+            )
+            return .trained
         } catch {
-            lastError = (error as? LocalizedError)?.errorDescription
+            let message = (error as? LocalizedError)?.errorDescription
                 ?? String(describing: error)
+            return .failed(message: message)
         }
     }
 
     /// Restore the most recently trained classifier from the local DB
-    /// so predictions are available immediately on app launch. Silent
-    /// when the table is empty or the blob header doesn't match.
+    /// so predictions are available immediately on app launch. 0.8.2:
+    /// picks the latest row *per camera scope* — we now persist one
+    /// row per camera after each ⌘T, and on restore we want both in
+    /// memory so predict() can route either camera's frames.
     func restoreLatestModel() async {
         let reader = Database.shared.reader
-        let row = try? await reader.read { db in
+        let rows = (try? await reader.read { db in
             try ModelVersionRecord
                 .order(Column("trainedAt").desc)
-                .fetchOne(db)
+                .fetchAll(db)
+        }) ?? []
+
+        // Walk rows newest-first, remember the first one we see for
+        // each camera scope. Legacy rows with `cameraScope == nil`
+        // (pre-0.8.2 cross-camera blobs) are assigned to `.color` by
+        // default — those installs only had colour data anyway, and
+        // a fresh ⌘T will overwrite them with per-scope entries.
+        var latest: [CameraType: ModelVersionRecord] = [:]
+        for row in rows {
+            let scope = row.cameraScope ?? .color
+            if latest[scope] == nil {
+                latest[scope] = row
+            }
+            if latest.count == CameraType.allCases.count { break }
         }
-        guard let row else { return }
-        guard let decoded = Self.decodeWeights(row.classifierWeights) else {
-            // Either an older blob shape (e.g. CMLW v1 logreg from
-            // 0.4.x) or a corrupt row. Leaving the in-memory state
-            // untrained means the toolbar chip will still report
-            // "untrained" — the curator can retrain with ⌘T.
-            return
+
+        var restoredAny = false
+        for (cameraType, row) in latest {
+            guard let decoded = Self.decodeWeights(row.classifierWeights) else {
+                // Older blob shape or corrupt row — skip. Untrained
+                // state for that camera is a survivable outcome; the
+                // toolbar chip will show "untrained" until ⌘T.
+                continue
+            }
+            var model = CameraModel()
+            model.weights1 = decoded.weights1
+            model.bias1 = decoded.bias1
+            model.weights2 = decoded.weights2
+            model.bias2 = decoded.bias2
+            model.featureDim = decoded.featureDim
+            model.hiddenDim = decoded.hiddenDim
+
+            var restoredTrainAccuracy: Float = 0
+            var restoredDuration: Double = 0
+            if let notes = row.notes,
+               let data = notes.data(using: .utf8),
+               let dict = try? JSONSerialization.jsonObject(with: data)
+                 as? [String: Double] {
+                restoredTrainAccuracy = Float(dict["trainAccuracy"] ?? 0)
+                restoredDuration = dict["durationSeconds"] ?? 0
+            }
+            model.summary = TrainingSummary(
+                trainedAt: row.trainedAt,
+                sampleCount: row.trainingSetSize,
+                classCounts: row.classCounts,
+                finalLoss: 0,           // not persisted
+                trainAccuracy: restoredTrainAccuracy,
+                cvAccuracy: row.accuracy5FoldCV.map(Float.init),
+                confusionMatrix: nil,   // not persisted
+                classMetrics: nil,      // not persisted
+                durationSeconds: restoredDuration
+            )
+            models[cameraType] = model
+            restoredAny = true
         }
-        weights1 = decoded.weights1
-        bias1 = decoded.bias1
-        weights2 = decoded.weights2
-        bias2 = decoded.bias2
-        featureDim = decoded.featureDim
-        hiddenDim = decoded.hiddenDim
         weightsVersion &+= 1
 
-        // Unpack the trainAccuracy + duration stashed in `notes`
-        // as JSON by persistTrainedModel. Older rows (notes=nil)
-        // still decode — trainAccuracy stays 0 only for them, and
-        // the UI already prefers CV as the headline metric.
-        var restoredTrainAccuracy: Float = 0
-        var restoredDuration: Double = 0
-        if let notes = row.notes,
-           let data = notes.data(using: .utf8),
-           let dict = try? JSONSerialization.jsonObject(with: data)
-             as? [String: Double] {
-            restoredTrainAccuracy = Float(dict["trainAccuracy"] ?? 0)
-            restoredDuration = dict["durationSeconds"] ?? 0
+        // Headline fields for the UI: prefer colour, fallback to mono.
+        if let colorSummary = models[.color]?.summary {
+            summary = colorSummary
+            lastCoverage = models[.color]?.lastCoverage
+        } else if let monoSummary = models[.monochrome]?.summary {
+            summary = monoSummary
+            lastCoverage = models[.monochrome]?.lastCoverage
         }
-        summary = TrainingSummary(
-            trainedAt: row.trainedAt,
-            sampleCount: row.trainingSetSize,
-            classCounts: row.classCounts,
-            finalLoss: 0,           // not persisted
-            trainAccuracy: restoredTrainAccuracy,
-            cvAccuracy: row.accuracy5FoldCV.map(Float.init),
-            confusionMatrix: nil,   // not persisted
-            classMetrics: nil,      // not persisted
-            durationSeconds: restoredDuration
-        )
 
-        await recomputeAllPredictions()
+        if restoredAny {
+            await recomputeAllPredictions()
+        }
     }
 
-    /// Predict for a single image. Returns `nil` when the classifier
-    /// has not been trained yet, or when no cached embedding exists.
+    /// Predict for a single image. Routes through the per-camera
+    /// model trained for the image's `cameraSource.cameraType`.
+    /// Returns `nil` when that camera's model hasn't been trained
+    /// yet, or when no cached embedding exists.
     func predict(image: ImageRecord) -> Prediction? {
-        guard !weights2.isEmpty, featureDim > 0, hiddenDim > 0 else {
-            return nil
-        }
+        let camType = image.cameraSource.cameraType
+        guard let model = models[camType], model.isTrained else { return nil }
         guard let vector = FeatureVectorBuilder.vector(for: image),
-              vector.count == featureDim else { return nil }
+              vector.count == model.featureDim else { return nil }
         return Self.runPrediction(
             vector: vector,
-            weights1: weights1, bias1: bias1,
-            weights2: weights2, bias2: bias2,
-            hiddenDim: hiddenDim,
+            weights1: model.weights1, bias1: model.bias1,
+            weights2: model.weights2, bias2: model.bias2,
+            hiddenDim: model.hiddenDim,
             numClasses: numClasses
         )
     }
@@ -759,25 +836,19 @@ final class ClassifierEngine: ObservableObject {
     /// Re-score every image against the current weights without
     /// retraining. Called by the embedding warmer after it finishes
     /// catching up unrated frames so brain badges appear on tiles
-    /// whose sidecar was only just generated. No-op when the
-    /// classifier is empty.
+    /// whose sidecar was only just generated. No-op when no camera
+    /// has a trained model yet.
     func refreshPredictions() async {
-        guard !weights2.isEmpty, featureDim > 0, hiddenDim > 0 else {
-            return
-        }
+        guard models.values.contains(where: \.isTrained) else { return }
         await recomputeAllPredictions()
     }
 
     /// Clear in-memory model + predictions. Useful when the user
     /// wants to reset before a fresh train.
     func clear() {
-        weights1 = []
-        bias1 = []
-        weights2 = []
-        bias2 = []
-        featureDim = 0
-        hiddenDim = 0
+        models = [:]
         summary = nil
+        lastCoverage = nil
         predictions = [:]
         weightsVersion &+= 1
     }
@@ -880,7 +951,9 @@ final class ClassifierEngine: ObservableObject {
 
     /// Read every rated image that has a cached embedding, build its
     /// feature vector, and return the aligned (features, class) pairs.
-    private func loadTrainingSet() async throws -> TrainingSetDiagnostics {
+    private func loadTrainingSet(
+        cameraType: CameraType? = nil
+    ) async throws -> TrainingSetDiagnostics {
         let reader = Database.shared.reader
 
         let labels = try await reader.read { db in
@@ -915,16 +988,18 @@ final class ClassifierEngine: ObservableObject {
         let dayOnly = AppSettings.shared.dayOnlyMode
         let sunAltMin = AppSettings.shared.dayOnlySunAltMinDeg
 
-        let eligibleLabels: [LabelRecord]
-        if nightOnly || dayOnly {
-            eligibleLabels = labels.filter { label in
-                guard let image = imageById[label.imageId] else { return false }
-                if nightOnly, image.sunAltDeg > sunAltMax { return false }
-                if dayOnly,   image.sunAltDeg < sunAltMin { return false }
-                return true
+        // 0.8.2: camera-type filter stacks on top of the sun-altitude
+        // filters when the caller asks for a single-camera training
+        // set (used by train() to fit dedicated color / mono models).
+        let cameraFilter = cameraType
+        let eligibleLabels: [LabelRecord] = labels.filter { label in
+            guard let image = imageById[label.imageId] else { return false }
+            if nightOnly, image.sunAltDeg > sunAltMax { return false }
+            if dayOnly,   image.sunAltDeg < sunAltMin { return false }
+            if let cameraFilter, image.cameraSource.cameraType != cameraFilter {
+                return false
             }
-        } else {
-            eligibleLabels = labels
+            return true
         }
 
         var samples: [LabeledSample] = []
@@ -937,13 +1012,11 @@ final class ClassifierEngine: ObservableObject {
                 LabeledSample(
                     imageId: label.imageId,
                     features: vector,
-                    classIndex: label.ratingClass.rawValue - 1,   // 1…5 → 0…4
+                    classIndex: label.ratingClass.rawValue - 1,   // 1…3 → 0…2
                     labelWeight: Float(label.sampleWeight)
                 )
             )
         }
-
-        if let first = samples.first { featureDim = first.features.count }
         return TrainingSetDiagnostics(
             samples: samples,
             totalRated: eligibleLabels.count
@@ -1307,21 +1380,13 @@ final class ClassifierEngine: ObservableObject {
     /// Re-score every image the library currently holds after a
     /// training run. Called automatically from `train()`.
     private func recomputeAllPredictions() async {
-        // Snapshot weights + version so the detached work doesn't
-        // need MainActor access for them. If weightsVersion moves on
-        // during the detached run (a fresh train() overlapped an
-        // older restoreLatestModel() recompute, for instance), we
-        // throw the result away — otherwise the older recompute
-        // could overwrite the newer model's predictions with stale
-        // scores and leave the matrix in a "the chip says 53% but
-        // the badges match the 28% classifier" mismatch.
+        // Snapshot per-camera models + version so the detached work
+        // doesn't need MainActor access. The dispatch inside the
+        // loop picks the right model by image.cameraSource so a
+        // colour-only trained install silently skips mono frames
+        // (and vice versa).
         let launchVersion = weightsVersion
-        let W1snap = weights1
-        let b1snap = bias1
-        let W2snap = weights2
-        let b2snap = bias2
-        let dim = featureDim
-        let H = hiddenDim
+        let snapshots = models
         let numClasses = self.numClasses
 
         let next = await Task.detached(priority: .utility) {
@@ -1334,15 +1399,18 @@ final class ClassifierEngine: ObservableObject {
             var next: [Int64: Prediction] = [:]
             for image in images {
                 if Task.isCancelled { return next }
-                guard let id = image.id,
+                let camType = image.cameraSource.cameraType
+                guard let model = snapshots[camType],
+                      model.isTrained,
+                      let id = image.id,
                       let vector = FeatureVectorBuilder.vector(for: image),
-                      vector.count == dim
+                      vector.count == model.featureDim
                 else { continue }
                 if let prediction = Self.runPrediction(
                     vector: vector,
-                    weights1: W1snap, bias1: b1snap,
-                    weights2: W2snap, bias2: b2snap,
-                    hiddenDim: H, numClasses: numClasses
+                    weights1: model.weights1, bias1: model.bias1,
+                    weights2: model.weights2, bias2: model.bias2,
+                    hiddenDim: model.hiddenDim, numClasses: numClasses
                 ) {
                     next[id] = prediction
                 }
@@ -1578,34 +1646,33 @@ final class ClassifierEngine: ObservableObject {
     /// row carries the exact CV accuracy the UI surfaces. Skipped when
     /// the in-memory state is empty (guard against a race where
     /// training failed mid-way).
-    private func persistTrainedModel() async {
-        guard !weights1.isEmpty, !bias1.isEmpty,
-              !weights2.isEmpty, !bias2.isEmpty,
-              featureDim > 0, hiddenDim > 0,
-              let summary else { return }
+    private func persistTrainedModel(
+        cameraType: CameraType, model: CameraModel
+    ) async {
+        guard model.isTrained,
+              let summary = model.summary else { return }
 
         let blob = Self.encodeWeights(
-            featureDim: featureDim,
-            hiddenDim: hiddenDim,
+            featureDim: model.featureDim,
+            hiddenDim: model.hiddenDim,
             numClasses: numClasses,
-            weights1: weights1, bias1: bias1,
-            weights2: weights2, bias2: bias2
+            weights1: model.weights1, bias1: model.bias1,
+            weights2: model.weights2, bias2: model.bias2
         )
 
         // Version string: ISO-8601 to second precision + millisecond
-        // counter + sample count. The millisecond tail protects
-        // against two trains in the same second colliding on the
-        // UNIQUE primary key and silently dropping the newer row
-        // (PersistableRecord.insert throws, the catch block below
-        // swallows it, restore later loads the stale snapshot).
+        // counter + camera scope + sample count. The camera segment
+        // ensures colour and mono trains in the same millisecond
+        // don't collide on the UNIQUE primary key.
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         let millis = Int((summary.trainedAt.timeIntervalSince1970 * 1000)
                          .truncatingRemainder(dividingBy: 1000))
         let versionString = String(
-            format: "v%@-%03d-%d",
+            format: "v%@-%03d-%@-%d",
             formatter.string(from: summary.trainedAt),
             millis,
+            cameraType.rawValue,
             summary.sampleCount
         )
 
@@ -1629,7 +1696,8 @@ final class ClassifierEngine: ObservableObject {
             classifierType: .mlp2,
             classifierWeights: blob,
             accuracy5FoldCV: summary.cvAccuracy.map(Double.init),
-            notes: notes
+            notes: notes,
+            cameraScope: cameraType
         )
 
         do {

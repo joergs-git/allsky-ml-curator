@@ -242,6 +242,19 @@ final class Database {
         // because the numClasses field in the CMLW v2 header now
         // reads 3 while stored blobs carry 5 — silent fallback to
         // "untrained" on restore, user hits ⌘T once.
+        // 0.8.2: per-camera classifier models. One row per camera
+        // scope in model_versions; the restore path picks the latest
+        // row for each scope. Legacy rows with NULL cameraScope
+        // default to .color inside ClassifierEngine.restoreLatestModel.
+        migrator.registerMigration("v9_add_model_camera_scope") { db in
+            let existing = Set((try? db.columns(in: "model_versions"))?.map(\.name) ?? [])
+            try db.alter(table: "model_versions") { t in
+                if !existing.contains("cameraScope") {
+                    t.add(column: "cameraScope", .text)
+                }
+            }
+        }
+
         migrator.registerMigration("v8_remap_rating_classes_to_three_class") { db in
             // Single CASE statement so the remap is atomic — if we
             // issued separate UPDATEs in sequence, e.g. `5→3` then
