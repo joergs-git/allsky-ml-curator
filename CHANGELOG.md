@@ -4,6 +4,36 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.5.5] — 2026-04-22
+
+Mirror of the night-only path for a future daytime classifier.
+
+### Added
+- **`AppSettings.dayOnlyMode: Bool`** plus
+  **`dayOnlySunAltMinDeg: Double`** (default 10°, range −6…30°).
+  Parallel to `nightOnlyMode`: when on, matrix + training keep only
+  frames with `sun_alt_deg >= dayOnlySunAltMinDeg`.
+- **`AppSettings.sunAltitudeProblemThresholdDeg: Double`** (default
+  10°, range −6…45°). Gates the new sun-risk badge (SF Symbol
+  `sun.max.fill`, warm orange capsule) in the tile bottom-left,
+  mirror of the moon badge. Opacity scales with `sin(sun_alt)`.
+- **Preferences → Training → Time-of-day filter** now has both
+  toggles stacked with their own sliders. Flipping one on
+  automatically flips the other off — the predicates compose to
+  zero frames otherwise, so making them mutually exclusive in the
+  UI is clearer than letting the user footgun.
+- **Preferences → Training → Overlay thresholds** extended with a
+  second slider for the sun altitude badge, sibling of the moon
+  slider.
+
+### Changed
+- `ImageLibrary.fetchImages` gains `minSunAltDeg: Double?` — same
+  semantics as `maxSunAltDeg` but inverted. Applied in the same
+  query pass; both can technically be active (UI prevents it).
+- `ClassifierEngine.loadTrainingSet` filters on either or both
+  bounds before building the sample set, so `totalRated` in the
+  coverage diagnostic reflects whichever sub-window is active.
+
 ## [0.5.4] — 2026-04-22
 
 Two new at-a-glance risk icons on every matrix tile (driven by

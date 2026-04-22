@@ -41,6 +41,7 @@ final class ImageLibrary: ObservableObject {
         includeExcluded: Bool = false,
         ratingFilter: RatingFilter = .any,
         maxSunAltDeg: Double? = nil,
+        minSunAltDeg: Double? = nil,
         limit: Int? = nil
     ) async -> [ImageListItem] {
         let reader = Database.shared.reader
@@ -60,6 +61,12 @@ final class ImageLibrary: ObservableObject {
                     // higher than this threshold. Soft: the rows stay
                     // in the table, we just don't surface them.
                     builder = builder.filter(Column("sunAltDeg") <= maxSunAltDeg)
+                }
+                if let minSunAltDeg {
+                    // Day-only filter — inverse of night-only. Both
+                    // can technically compose (yielding no rows) but
+                    // the UI prevents that by toggling them exclusively.
+                    builder = builder.filter(Column("sunAltDeg") >= minSunAltDeg)
                 }
                 builder = builder.order(ImageRecord.Columns.captureUtc.asc)
                 if let limit { builder = builder.limit(limit) }

@@ -41,6 +41,9 @@ struct PreferencesView: View {
     @State private var nightOnlyMode: Bool      = AppSettings.shared.nightOnlyMode
     @State private var nightOnlySunAltMax: Double = AppSettings.shared.nightOnlySunAltMaxDeg
     @State private var moonAltProblemThreshold: Double = AppSettings.shared.moonAltitudeProblemThresholdDeg
+    @State private var dayOnlyMode: Bool        = AppSettings.shared.dayOnlyMode
+    @State private var dayOnlySunAltMin: Double = AppSettings.shared.dayOnlySunAltMinDeg
+    @State private var sunAltProblemThreshold: Double = AppSettings.shared.sunAltitudeProblemThresholdDeg
 
     // MARK: - Advanced tab state
 
@@ -273,7 +276,7 @@ struct PreferencesView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Night-only mode")
                             .font(.subheadline.weight(.semibold))
-                        Text("Hides day / twilight frames from the matrix AND the classifier's training set. Soft filter — the frames stay in the database, so a separate day-classifier can be trained on them later without re-ingesting. Use when daytime reflections (sun glint, bright overcast ↔ bright clear ambiguity) pollute the model. Toggle off to get everything back.")
+                        Text("Hides day / twilight frames from the matrix AND the classifier's training set. Soft filter — the frames stay in the database, so a separate day-classifier can be trained on them later without re-ingesting.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -281,13 +284,20 @@ struct PreferencesView: View {
                 }
                 .onChange(of: nightOnlyMode) { _, new in
                     AppSettings.shared.nightOnlyMode = new
+                    if new {
+                        // Mutually exclusive with day-only — flip the
+                        // other off so the combined predicate doesn't
+                        // silently yield zero frames.
+                        dayOnlyMode = false
+                        AppSettings.shared.dayOnlyMode = false
+                    }
                     NotificationCenter.default.post(
                         name: .nightOnlyFilterChanged, object: nil
                     )
                 }
 
                 sliderRow(
-                    label: "Max sun altitude",
+                    label: "Max sun altitude (night)",
                     value: $nightOnlySunAltMax,
                     range: -18.0 ... -6.0,
                     step: 0.5,
@@ -299,7 +309,43 @@ struct PreferencesView: View {
                     )
                 }
 
-                Text("Standard thresholds: −6° civil darkness · −12° nautical darkness · −18° astronomical night (strictest, no twilight glow at all).")
+                Divider()
+
+                Toggle(isOn: $dayOnlyMode) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Day-only mode")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Mirror of night-only mode. Keeps only frames with sun above the threshold — for the future separately-trained daytime classifier. Mutually exclusive with night-only (flipping this on flips night-only off).")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .onChange(of: dayOnlyMode) { _, new in
+                    AppSettings.shared.dayOnlyMode = new
+                    if new {
+                        nightOnlyMode = false
+                        AppSettings.shared.nightOnlyMode = false
+                    }
+                    NotificationCenter.default.post(
+                        name: .nightOnlyFilterChanged, object: nil
+                    )
+                }
+
+                sliderRow(
+                    label: "Min sun altitude (day)",
+                    value: $dayOnlySunAltMin,
+                    range: -6.0 ... 30.0,
+                    step: 0.5,
+                    displayFormat: "%.1f°"
+                ) { new in
+                    AppSettings.shared.dayOnlySunAltMinDeg = new
+                    NotificationCenter.default.post(
+                        name: .nightOnlyFilterChanged, object: nil
+                    )
+                }
+
+                Text("Night anchors: −6° civil darkness · −12° nautical · −18° astronomical (default). Day anchors: 0° horizon · 10° clearly up (default) · 15° no twilight contamination.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -314,7 +360,15 @@ struct PreferencesView: View {
                     displayFormat: "%.0f°"
                 ) { new in AppSettings.shared.moonAltitudeProblemThresholdDeg = new }
 
-                Text("Bottom-left moon badge on each tile only shows when the moon is **at or above** this altitude. Below, the moon is either behind the horizon mask or too low to cause real lens flare / sky glow. Default 30° — a sensible Rheine-site value. Raise if trees / buildings obscure more, lower on sites with an exposed horizon.")
+                sliderRow(
+                    label: "Sun altitude problem",
+                    value: $sunAltProblemThreshold,
+                    range: -6.0 ... 45.0,
+                    step: 1.0,
+                    displayFormat: "%.0f°"
+                ) { new in AppSettings.shared.sunAltitudeProblemThresholdDeg = new }
+
+                Text("Bottom-left badges on each tile only show when the respective body is **at or above** its altitude threshold. Below, the body either sits behind the horizon mask or is too low to cause real lens flare. Defaults: moon 30° (Rheine-site empirical), sun 10° (bright enough to create strong fisheye reflections). Adjust for different sites / camera bodies.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

@@ -289,6 +289,47 @@ final class AppSettings {
         set { defaults.set(newValue, forKey: Key.moonAltProblemThreshold) }
     }
 
+    /// Day-only complement to `nightOnlyMode`. When on, the matrix
+    /// view and training set keep only frames whose `sun_alt_deg >=
+    /// dayOnlySunAltMinDeg` — the rest (twilight + night) are soft-
+    /// filtered out. Intended for the future separately-trained
+    /// daytime cloud classifier, where reflections and lens flare
+    /// are part of the learned signal rather than pollution.
+    ///
+    /// Mutually exclusive with `nightOnlyMode` in the UI — flipping
+    /// one on flips the other off — but the predicates combine
+    /// correctly anyway (sun_alt can't satisfy both `<= -18°` and
+    /// `>= 10°`, so both-on yields zero frames and the user sees
+    /// the empty-state).
+    var dayOnlyMode: Bool {
+        get { defaults.bool(forKey: Key.dayOnlyMode) }
+        set { defaults.set(newValue, forKey: Key.dayOnlyMode) }
+    }
+
+    /// Sun altitude threshold for day-only mode. Frames with
+    /// `sun_alt_deg >= dayOnlySunAltMinDeg` pass the filter.
+    ///   *  0°  sun on the horizon (includes civil twilight edge)
+    ///   * 10°  sun clearly up, past most twilight artefacts (default)
+    ///   * 15°  strong daylight, no twilight contamination
+    var dayOnlySunAltMinDeg: Double {
+        get { defaults.double(forKey: Key.dayOnlySunAltMin, default: 10.0) }
+        set { defaults.set(newValue, forKey: Key.dayOnlySunAltMin) }
+    }
+
+    /// Sun altitude (in degrees) at/above which the sun becomes a
+    /// real reflection / lens-flare problem. Mirrors
+    /// `moonAltitudeProblemThresholdDeg` but for the sun. Used by
+    /// `MatrixTileCell.showSunIcon` to gate the bottom-left sun
+    /// badge so a day-classifier curator can spot which tiles
+    /// carry high-sun-angle artefacts. 10° default — sun already
+    /// bright enough to create strong fisheye reflections on a
+    /// color allsky dome. Adjust 0°…30° depending on how sensitive
+    /// the specific camera body is to sun glare.
+    var sunAltitudeProblemThresholdDeg: Double {
+        get { defaults.double(forKey: Key.sunAltProblemThreshold, default: 10.0) }
+        set { defaults.set(newValue, forKey: Key.sunAltProblemThreshold) }
+    }
+
     /// Width of the MLP hidden layer. 128 is the 0.5.0 default —
     /// large enough to learn the non-linear "bright cloudy at day"
     /// vs "clear at day" split in Vision FeaturePrint space, small
@@ -413,7 +454,10 @@ final class AppSettings {
         static let mlpHiddenDim = "ml.mlpHiddenDim"
         static let nightOnlyMode = "ml.nightOnlyMode"
         static let nightOnlySunAltMax = "ml.nightOnlySunAltMaxDeg"
+        static let dayOnlyMode = "ml.dayOnlyMode"
+        static let dayOnlySunAltMin = "ml.dayOnlySunAltMinDeg"
         static let moonAltProblemThreshold = "overlay.moonAltProblemThresholdDeg"
+        static let sunAltProblemThreshold = "overlay.sunAltProblemThresholdDeg"
         static let nightMode = "appearance.nightMode"
     }
 }

@@ -547,18 +547,25 @@ final class ClassifierEngine: ObservableObject {
         }
         let imageById = Dictionary(uniqueKeysWithValues: imageByIdPairs)
 
-        // Night-only mode filters training by sun altitude, matching
-        // the matrix view so what the user sees and what the model
-        // learns stay consistent. Soft filter — rows stay in the DB
-        // for later (e.g. a separate day-classifier).
+        // Night-only / day-only modes filter training by sun altitude,
+        // matching the matrix view so what the user sees and what the
+        // model learns stay consistent. Soft filters — rows stay in
+        // the DB for later (e.g. a separate day-classifier). Both
+        // modes technically compose (sun_alt can't be ≤ −18° and ≥
+        // 10° at the same time) but the UI toggles them mutually
+        // exclusively so it's fine.
         let nightOnly = AppSettings.shared.nightOnlyMode
         let sunAltMax = AppSettings.shared.nightOnlySunAltMaxDeg
+        let dayOnly = AppSettings.shared.dayOnlyMode
+        let sunAltMin = AppSettings.shared.dayOnlySunAltMinDeg
 
         let eligibleLabels: [LabelRecord]
-        if nightOnly {
+        if nightOnly || dayOnly {
             eligibleLabels = labels.filter { label in
                 guard let image = imageById[label.imageId] else { return false }
-                return image.sunAltDeg <= sunAltMax
+                if nightOnly, image.sunAltDeg > sunAltMax { return false }
+                if dayOnly,   image.sunAltDeg < sunAltMin { return false }
+                return true
             }
         } else {
             eligibleLabels = labels

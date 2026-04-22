@@ -776,10 +776,14 @@ struct ContentView: View {
         let maxSunAlt: Double? = AppSettings.shared.nightOnlyMode
             ? AppSettings.shared.nightOnlySunAltMaxDeg
             : nil
+        let minSunAlt: Double? = AppSettings.shared.dayOnlyMode
+            ? AppSettings.shared.dayOnlySunAltMinDeg
+            : nil
         let loaded = await ImageLibrary.shared.fetchImages(
             cameraType: cameraFilter,
             ratingFilter: ratingFilter,
-            maxSunAltDeg: maxSunAlt
+            maxSunAltDeg: maxSunAlt,
+            minSunAltDeg: minSunAlt
         )
         // `.mismatches` is the only filter whose predicate depends on
         // in-memory classifier predictions (not persisted to SQLite),

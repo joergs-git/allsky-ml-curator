@@ -74,6 +74,25 @@ struct MatrixTileCell: View {
             && item.image.moonPhase > 0.05
     }
 
+    /// Same idea as `showMoonIcon` but for the sun. A sun badge on
+    /// the tile tells a day-classifier curator "this frame has the
+    /// sun up high enough to matter for reflections." Night frames
+    /// naturally fall below any reasonable threshold and get no icon.
+    private var showSunIcon: Bool {
+        let threshold = AppSettings.shared.sunAltitudeProblemThresholdDeg
+        return item.image.sunAltDeg >= threshold
+    }
+
+    /// Normalised sun-risk score 0…1 — just `sin(alt)` above the
+    /// horizon, 0 otherwise. Drives the sun icon's opacity so a sun
+    /// right at the threshold reads faint and the overhead midday
+    /// sun reads solid.
+    private var sunRiskScore: Double {
+        let alt = item.image.sunAltDeg
+        guard alt > 0 else { return 0 }
+        return sin(alt * .pi / 180.0)
+    }
+
     /// Automatic per-frame reflection risk (0…1) derived at ingest
     /// from sun/moon geometry + exposure — distinct from the
     /// curator's own `R` flag which sits on the LabelRecord. We show
@@ -135,6 +154,7 @@ struct MatrixTileCell: View {
                     // underlying signals come from ingest-time
                     // ephemeris + geometry, not from user labels.
                     HStack(spacing: 4) {
+                        if showSunIcon { sunRiskIcon }
                         if showMoonIcon { moonRiskIcon }
                         if showReflectionIcon { reflectionRiskIcon }
                     }
@@ -243,6 +263,29 @@ struct MatrixTileCell: View {
                 .fill(AppColors.bgControl(nightMode))
                 .overlay { ProgressView().controlSize(.small) }
         }
+    }
+
+    /// Sun risk icon — mirror of the moon icon for the day-training
+    /// workflow. Yellow/orange capsule, SF Symbol `sun.max.fill`.
+    /// Shown when sun is at/above the user's configured threshold
+    /// (`AppSettings.sunAltitudeProblemThresholdDeg`). Opacity
+    /// scales with `sin(sun_alt)` so a sun at the threshold reads
+    /// faint and an overhead sun reads solid.
+    private var sunRiskIcon: some View {
+        let alpha = max(0.5, min(1.0, sunRiskScore * 1.2))
+        let tooltip = String(
+            format: "Sun risk  ·  alt %.0f°  ·  sin(alt) %.2f",
+            item.image.sunAltDeg, sunRiskScore
+        )
+        return Image(systemName: "sun.max.fill")
+            .font(.system(size: 10, weight: .black))
+            .foregroundStyle(Color.white.opacity(alpha))
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(Color(red: 0.98, green: 0.65, blue: 0.15).opacity(alpha))
+            .clipShape(Capsule())
+            .shadow(color: .black.opacity(0.5), radius: 1, y: 1)
+            .help(tooltip)
     }
 
     /// Moon icon that only shows when the moon is above the horizon
