@@ -45,6 +45,9 @@ struct PreferencesView: View {
     @State private var dayOnlySunAltMin: Double = AppSettings.shared.dayOnlySunAltMinDeg
     @State private var sunAltProblemThreshold: Double = AppSettings.shared.sunAltitudeProblemThresholdDeg
     @State private var showSweepSheet: Bool = false
+    @State private var featureMoonScale: Double = AppSettings.shared.featureMoonVisibilityScale
+    @State private var featureSunScale: Double = AppSettings.shared.featureSunVisibilityScale
+    @State private var featureReflectionScale: Double = AppSettings.shared.featureReflectionRiskScale
 
     // MARK: - Advanced tab state
 
@@ -375,6 +378,37 @@ struct PreferencesView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            Section("Feature-vector scales (advanced)") {
+                sliderRow(
+                    label: "Moon visibility (aux idx 782)",
+                    value: $featureMoonScale,
+                    range: 1.0 ... 100.0,
+                    step: 1.0,
+                    displayFormat: "%.0f×"
+                ) { new in AppSettings.shared.featureMoonVisibilityScale = new }
+
+                sliderRow(
+                    label: "Sun visibility (aux idx 783)",
+                    value: $featureSunScale,
+                    range: 1.0 ... 100.0,
+                    step: 1.0,
+                    displayFormat: "%.0f×"
+                ) { new in AppSettings.shared.featureSunVisibilityScale = new }
+
+                sliderRow(
+                    label: "Reflection risk (aux idx 777)",
+                    value: $featureReflectionScale,
+                    range: 1.0 ... 100.0,
+                    step: 1.0,
+                    displayFormat: "%.0f×"
+                ) { new in AppSettings.shared.featureReflectionRiskScale = new }
+
+                Text("Post-build multipliers applied to three specific aux-feature indices before they enter the classifier. Raising a scale forces the MLP to pay more attention to that signal relative to the 768-dim Vision embedding. The hyperparameter autopilot discovers these values via its sweep and writes them here when you click Apply on a winning config; adjust manually for experimentation. **Values > 1 will invalidate the currently-stored classifier** — ⌘T to retrain on the new feature conditioning.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Section("MLP head (2 layers)") {
                 sliderRow(
                     label: "Learning rate",
@@ -439,13 +473,16 @@ struct PreferencesView: View {
                 HStack {
                     Button("Reset training defaults") {
                         AppSettings.shared.resetTrainingHyperparameters()
-                        trainingLR         = AppSettings.shared.trainingLearningRate
-                        trainingIterations = AppSettings.shared.trainingIterations
-                        trainingL2         = AppSettings.shared.trainingL2
-                        mlpHiddenDim       = AppSettings.shared.mlpHiddenDim
-                        classBoosts        = AppSettings.shared.classWeightBoosts
-                        autoThreshold      = AppSettings.shared.autonomousConfidenceThreshold
-                        autoMinLabels      = AppSettings.shared.autonomousMinLabels
+                        trainingLR             = AppSettings.shared.trainingLearningRate
+                        trainingIterations     = AppSettings.shared.trainingIterations
+                        trainingL2             = AppSettings.shared.trainingL2
+                        mlpHiddenDim           = AppSettings.shared.mlpHiddenDim
+                        classBoosts            = AppSettings.shared.classWeightBoosts
+                        featureMoonScale       = AppSettings.shared.featureMoonVisibilityScale
+                        featureSunScale        = AppSettings.shared.featureSunVisibilityScale
+                        featureReflectionScale = AppSettings.shared.featureReflectionRiskScale
+                        autoThreshold          = AppSettings.shared.autonomousConfidenceThreshold
+                        autoMinLabels          = AppSettings.shared.autonomousMinLabels
                     }
                     Spacer()
                 }

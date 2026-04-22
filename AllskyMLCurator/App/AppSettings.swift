@@ -440,6 +440,9 @@ final class AppSettings {
         defaults.removeObject(forKey: Key.classBoost4)
         defaults.removeObject(forKey: Key.classBoost5)
         defaults.removeObject(forKey: Key.mlpHiddenDim)
+        defaults.removeObject(forKey: Key.featureMoonScale)
+        defaults.removeObject(forKey: Key.featureSunScale)
+        defaults.removeObject(forKey: Key.featureReflectionScale)
         defaults.removeObject(forKey: Key.autonomousMin)
         defaults.removeObject(forKey: Key.autonomousConfidence)
     }

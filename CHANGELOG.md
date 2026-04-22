@@ -4,6 +4,17 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.6.3] — 2026-04-22
+
+### Added
+- **Manual feature-scale sliders** in Preferences → Training →
+  "Feature-vector scales (advanced)". Three sliders for
+  `featureMoonVisibilityScale`, `featureSunVisibilityScale`,
+  `featureReflectionRiskScale` (range 1× … 100×, step 1×). Lets
+  the curator experiment without re-running the autopilot —
+  useful for quickly seeing "what if I crank moon×80". Reset
+  defaults covers them too.
+
 ## [0.6.2] — 2026-04-22
 
 Rounds out the ML autopilot into a first-class workflow tool:
