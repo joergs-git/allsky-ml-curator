@@ -330,6 +330,40 @@ final class AppSettings {
         set { defaults.set(newValue, forKey: Key.sunAltProblemThreshold) }
     }
 
+    /// Post-build scale applied to the `moon_visibility` aux feature
+    /// (index 782 in the 784-dim feature vector). Default 1.0 (no
+    /// change). The 0.6 sweep found that cranking this to 50× made
+    /// the MLP actually use the moon signal to discount cloud
+    /// predictions on clear-sky-with-moon-glow frames — the
+    /// unscaled 0…1 value was drowning in the 768-dim Vision
+    /// embedding magnitude. The autopilot writes the winning
+    /// config's scale here so subsequent ⌘T trains with the same
+    /// feature conditioning (otherwise the classifier silently
+    /// regresses to baseline the next time the user retrains).
+    var featureMoonVisibilityScale: Double {
+        get { defaults.double(forKey: Key.featureMoonScale, default: 1.0) }
+        set { defaults.set(newValue, forKey: Key.featureMoonScale) }
+    }
+
+    /// Post-build scale applied to the `sun_visibility` aux feature
+    /// (index 783). Default 1.0. Same rationale as
+    /// `featureMoonVisibilityScale` but for the sun — only relevant
+    /// once a day-classifier sweep actually gets run.
+    var featureSunVisibilityScale: Double {
+        get { defaults.double(forKey: Key.featureSunScale, default: 1.0) }
+        set { defaults.set(newValue, forKey: Key.featureSunScale) }
+    }
+
+    /// Post-build scale applied to the pre-computed geometric
+    /// `reflection_risk_score` (index 777). Default 1.0. The 0.6
+    /// sweep confirmed that 10…30× amplifies the signal enough for
+    /// the MLP to treat it as a strong "this brightness is
+    /// artefact, not cloud" prior.
+    var featureReflectionRiskScale: Double {
+        get { defaults.double(forKey: Key.featureReflectionScale, default: 1.0) }
+        set { defaults.set(newValue, forKey: Key.featureReflectionScale) }
+    }
+
     /// Width of the MLP hidden layer. 128 is the 0.5.0 default —
     /// large enough to learn the non-linear "bright cloudy at day"
     /// vs "clear at day" split in Vision FeaturePrint space, small
@@ -458,6 +492,9 @@ final class AppSettings {
         static let dayOnlySunAltMin = "ml.dayOnlySunAltMinDeg"
         static let moonAltProblemThreshold = "overlay.moonAltProblemThresholdDeg"
         static let sunAltProblemThreshold = "overlay.sunAltProblemThresholdDeg"
+        static let featureMoonScale = "feature.moonVisibilityScale"
+        static let featureSunScale = "feature.sunVisibilityScale"
+        static let featureReflectionScale = "feature.reflectionRiskScale"
         static let nightMode = "appearance.nightMode"
     }
 }

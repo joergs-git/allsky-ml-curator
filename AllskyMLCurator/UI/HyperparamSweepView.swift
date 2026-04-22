@@ -16,6 +16,7 @@ struct HyperparamSweepView: View {
 
     @State private var runTask: Task<Void, Never>?
     @State private var copyFeedback: String?
+    @State private var showHelp: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -54,6 +55,14 @@ struct HyperparamSweepView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            Button {
+                showHelp.toggle()
+            } label: {
+                Image(systemName: showHelp
+                      ? "questionmark.circle.fill"
+                      : "questionmark.circle")
+            }
+            .help("Show / hide the detailed explanation of what the sweep does and how to read the results.")
             if case let .finished(results) = classifier.sweepStatus {
                 copyButton(for: results)
             }
@@ -187,6 +196,71 @@ struct HyperparamSweepView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            if showHelp {
+                helpSection
+                    .padding(.top, 10)
+            }
+        }
+    }
+
+    /// Inline deep-dive help. Opens / closes via the `?` button in
+    /// the header. Structured as question → answer blocks so the
+    /// curator can skim and find the relevant bit.
+    @ViewBuilder private var helpSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Divider()
+            helpBlock(
+                title: "Why does this exist?",
+                body: "A two-layer MLP can in principle learn the interaction `moon_phase × sin(moon_alt)` from raw aux features, but at our sample scale (~1.5 k clear-sky night frames) it demonstrably **didn't** — bright moon on clear sky kept being predicted as thin or full cloud. Hand-tuning one knob at a time was slow and opaque. The autopilot brute-forces 12 combinations and ranks them objectively."
+            )
+            helpBlock(
+                title: "What the column headers mean",
+                body: """
+CV = 5-fold cross-validation accuracy (honest generalisation estimate).
+cls-5 recall = fraction of truly clear frames correctly predicted clear.
+5→1 = clear frames wrongly predicted as full cloud.
+5→4 = clear frames wrongly predicted as thin cloud (the moon-glow case).
+cls-1 P = precision on full-cloud predictions (when the model says "1", how often is it right).
+score = composite = CV − 0.5 × (5→1 % + 5→4 %). Higher is better.
+"""
+            )
+            helpBlock(
+                title: "What the composite score penalises",
+                body: "Pure accuracy hides class-specific failures — a model that predicts 'class 1 for everything' would hit 38 % accuracy on Rheine's data without actually learning. The 0.5 × leak rate penalty enforces 'the clear-sky class has to work'. Weighting is tuned so a 5 percentage-point accuracy gain doesn't justify a 10-point jump in the leak rate."
+            )
+            helpBlock(
+                title: "What the 12 configs probe",
+                body: """
+3 axes × variants:
+  (A) feature-scale — multiply moon / sun / reflection aux features by 10×, 50×, 100× so they dominate the first MLP layer instead of drowning in the 768-dim Vision embedding.
+  (B) per-class boost — 1.5× or 2.0× on class-5 to make the model care more about getting clear right.
+  (C) hidden-dim capacity — 256 or 512 hidden units for more non-linear room.
+Plus a baseline (your current Preferences) and a kitchen-sink "aggro" config that stacks everything.
+"""
+            )
+            helpBlock(
+                title: "What Apply actually does",
+                body: "Writes class-weight boosts, hidden-dim, learning rate, iterations, L2, AND the three feature-scale multipliers into Preferences → Training so subsequent ⌘T calls keep the new conditioning. Then kicks a fresh train() so the live model reflects the pick within ~5 s. No re-ingest or restart required. 'Baseline' winning means no change needed."
+            )
+            helpBlock(
+                title: "When to re-run",
+                body: "After every meaningful labeling pass (a few hundred new rated frames) or after toggling Night-only / Day-only mode — the sweep's answer is always 'best config for the current slice'. Also re-run after a label-quality audit where you correct a lot of existing labels — the right hyperparams shift as the training set gets cleaner."
+            )
+            helpBlock(
+                title: "When it won't help",
+                body: "If labels are the bottleneck (noisy / inconsistent human ratings), every config plateaus at the same ceiling. The leak-count columns are your tell — if all rows show similar 5→4 counts, the feature space genuinely can't separate those frames and more hyperparameter tuning won't change that. Go label-audit instead."
+            )
+        }
+    }
+
+    private func helpBlock(title: String, body: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+            Text(.init(body))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -315,14 +389,14 @@ struct HyperparamSweepView: View {
         }
     }
 
-    /// Write the config back to AppSettings where possible and kick
-    /// off a regular retrain so the Preferences values and the live
-    /// classifier immediately reflect the chosen settings. The
-    /// feature-scaling part (moon/sun/reflection multipliers) is
-    /// **not** persisted anywhere yet — we surface it here as a
-    /// diagnostic; if the winning config uses a non-1 scale, the
-    /// user is told to retrain manually via ⌘T after the sweep UI
-    /// saves a note.
+    /// Write the config back to AppSettings (all fields including
+    /// the per-feature scales) and kick off a regular retrain so
+    /// the Preferences values and the live classifier immediately
+    /// reflect the chosen settings. The 0.6.2 change is that
+    /// feature-scale multipliers (moon / sun / reflection) now get
+    /// persisted too and re-applied at vector-build time — prior to
+    /// this the sweep's scaling was diagnostic only and a manual
+    /// ⌘T silently regressed to baseline.
     private func apply(_ r: ClassifierEngine.SweepResult) {
         if let boosts = r.config.classBoosts {
             AppSettings.shared.classWeightBoosts = boosts
@@ -339,6 +413,15 @@ struct HyperparamSweepView: View {
         if let l2 = r.config.l2 {
             AppSettings.shared.trainingL2 = l2
         }
+        // Persist the per-feature scales too — FeatureVectorBuilder
+        // reads these on every vector build, so subsequent ⌘T calls
+        // get the same feature conditioning the sweep discovered.
+        AppSettings.shared.featureMoonVisibilityScale =
+            Double(r.config.moonVisibilityScale)
+        AppSettings.shared.featureSunVisibilityScale =
+            Double(r.config.sunVisibilityScale)
+        AppSettings.shared.featureReflectionRiskScale =
+            Double(r.config.reflectionRiskScale)
         // Kick a retrain so the live model reflects the applied
         // config. The classifier gauge will show "training…" while
         // it runs; sweep sheet can close in parallel.

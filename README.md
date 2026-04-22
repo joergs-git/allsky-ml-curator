@@ -2,7 +2,7 @@
 
 > Native macOS (Apple Silicon, Metal-accelerated) image curator for allsky 360° sky photography, with on-device ML assistance and live learning.
 
-**Version:** 0.4.0 (triage + weather-targeted ingest added)
+**Version:** 0.6.2 (ML autopilot hyperparameter sweep + moon/sun risk icons)
 **Status:** Active development
 
 ## Rating semantics — zenith cone, not full hemisphere
@@ -54,9 +54,17 @@ The resulting labeled dataset feeds three downstream uses:
 
 ### ML
 - **Autonomous streaming auto-rate** (`⌘⇧A`) — writes high-confidence `source='auto'` labels one tile at a time, live counter, mid-run stop. Gated behind a configurable minimum of human labels.
-- **Live ML loop** — Apple Vision FeaturePrint embedding + BNNS logistic-regression head trained with inverse-frequency + clear-sky boost weighting. Retrain in < 200 ms on typical Rheine datasets; 5-fold CV with per-class precision / recall / F1 + confusion-matrix heatmap.
-- **Classifier persistence** across launches (train accuracy + duration rehydrated from `model_versions.notes`).
-- **Forecast aux features** — meteoblue totalcloud + seeing + has-forecast flag denormalised per-frame into the 782-dim aux vector.
+- **Two-layer MLP classifier** (0.5.0+) — Dense(784→hidden, default 128) → ReLU → Dense(hidden→5) → softmax, trained with full-batch softmax-CE gradient descent via Accelerate `cblas_sgemm`. Replaced the linear logistic-regression head that plateaued at ~30 % train accuracy because the "bright overcast day ↔ clear day" boundary in Vision FeaturePrint space isn't linearly separable.
+- **UI-reactive training** (0.5.1+) — `train()` dispatches GD + 5-fold CV to a detached `userInitiated` task, so the matrix stays scrollable during the ~5-second fit. Before 0.5.1 the whole MainActor blocked for a minute+ on the full library.
+- **Hyperparameter autopilot** (0.6.x) — brain-icon toolbar button opens a sweep sheet that trains 12 configs (class-weight boosts × hidden-dim × feature-scale multipliers × learning rate × iterations), runs 5-fold CV per config, and ranks them by a composite score `CV − 0.5 × (class5→1 + class5→4 leak %)`. One click applies the winner's settings to Preferences and retrains. Typical run takes ~60 s on a Release build. Also surfaced in Preferences → Advanced.
+- **Per-class boost vector** (0.4.2+) — 5 sliders in Preferences → Training (one per RatingClass) replace the prior single "clear-sky boost" knob. The autopilot discovered that boosting class-5 while scaling moon/sun/reflection aux features 10-50× drops the class-5 → thin-cloud leak from 38 % to 7 %.
+- **Night-only / Day-only filter** (0.5.3+) — soft training + matrix filter on `sun_alt_deg`. Night-only default threshold −18° (astronomical darkness) for the current workflow; day-only slot sits ready for a separately-tuned daytime classifier. Toggles mutually exclusive.
+- **Explicit moon/sun visibility features** (0.5.6+) — `moon_phase × sin(moon_alt)` and `sin(sun_alt)` appended to the feature vector as indices 782 / 783. Persisted feature-scale multipliers (indices 777, 782, 783) let the autopilot's winning config carry over to manual ⌘T calls.
+- **Mismatch indicator + filter** (0.5.2+) — rated tiles where `prediction.topClass != ratingClass` get a dashed orange inner border + predicted-class badge; the filter dropdown's "Only mismatches" entry surfaces every disagreement for the label-audit pass.
+- **Moon + auto-reflection tile icons** (0.5.4+) — golden `moon.fill` when moon is at/above the user-configurable altitude threshold (default 30°, tunable in Preferences), orange `sparkles` when `reflection_risk_score > 0.2`. Opacity scales with intensity so full-moon-at-zenith reads solid, half-moon near threshold reads faint. Sun badge mirrors this for daytime.
+- **Classifier persistence** across launches (train accuracy + duration rehydrated from `model_versions.notes`). Blob format version-tagged (CMLW v2); feature-vector shape changes reject old blobs silently and fall back to "untrained" on launch.
+- **Embedding warmer as start/stop toggle** (0.5.4+) — click the Embeddings chip to kick or cancel the Vision FeaturePrint walker. Already-written sidecars stay on disk, so the cycle is lossless. Preferences → Advanced has the same control with detailed progress.
+- **Forecast aux features** — meteoblue totalcloud + seeing + has-forecast flag denormalised per-frame into the 784-dim aux vector.
 - **Cloud motion detection** — Vision translational registration between consecutive same-camera frames yields a °/min rate + compass bearing (when the north offset is calibrated).
 - **Geometric reflection + transitional prefilters** — sun / moon / AE-stability feed deterministic risk scores used as aux features. Daytime reflection risk peaks at ~30° sun altitude (plexiglass specular angle) with a 0.7 floor across the daylight band.
 - **Dynamic zenith crop** — horizon-exclusion slider + per-camera FoV compute a symmetric cone applied identically to thumbnail and embedding.
@@ -71,6 +79,20 @@ Roadmap: multi-site support + CloudWatcher Solo threshold feedback job (v2.x str
 
 ---
 
+## Recommended workflow
+
+Tight loop once the library is ingested:
+
+1. **Rate a batch** — keyboard (`0`-`5`, `R`, `T`) through a few hundred frames.
+2. **Retrain** with `⌘T`, or click the brain autopilot button in the toolbar to run the full sweep (~60 s) and apply the winning config automatically.
+3. **Audit mismatches** — flip the rating-filter dropdown to "Only mismatches (rating ≠ prediction)". Every rated tile with a dashed orange border + `⚠ N` badge is a disagreement. Opening Inspection (`Enter`) shows full-size image + full per-class probability vector side-by-side.
+4. **Correct labels** on the fly — a wrong-label fix via `1`-`5` updates the training set; the classifier's next retrain / next sweep reflects the new ground truth.
+5. **Repeat**. The sweep is cheap enough to re-run after every labeling burst — its "composite score" enforces real class-5 recall rather than majority-class accuracy drift.
+
+The moon / sun / auto-reflection icons in the tile bottom-left tell you *why* the classifier might be mispredicting: a moon badge on a class-5 → predicted-as-class-4 mismatch is usually moon glow on a genuinely clear sky; an auto-reflection badge on a class-5 → class-1 mismatch is typically a stray ground-light streak. Tune the moon threshold in Preferences → Training → Overlay thresholds to match your horizon obstruction profile (default 30° works for the Rheine site).
+
+---
+
 ## Tech stack
 
 | Layer | Technology | Notes |
@@ -78,7 +100,8 @@ Roadmap: multi-site support + CloudWatcher Solo threshold feedback job (v2.x str
 | UI | SwiftUI + AppKit hybrid | NSCollectionView for the matrix, NSEvent for keyboard |
 | Rendering | Metal compute + MTKView | GPU thumbnails, STF stretch (v1.1 for FITS) |
 | ML embedding | Apple Vision `VNGenerateImageFeaturePrintRequest` | 768-dim, ANE-accelerated, no model download |
-| Classifier head | Accelerate / BNNS | Logistic regression, per-batch retrain |
+| Classifier head | Accelerate `cblas_sgemm` + vDSP | **Two-layer MLP** (784 → 128 → 5), softmax-CE gradient descent, full-batch, detached task so the UI stays reactive |
+| Hyperparameter search | In-app autopilot sweep | 12-config grid, 5-fold CV per config, composite scoring penalising class-5 leak rate, one-click Apply |
 | Local DB | SQLite via GRDB.swift 7.x | Labels, images, predictions, model versions |
 | Remote sync | Supabase REST (URLSession) | Writes to the existing `astro-weather` Supabase project |
 | Astronomy | Pure-Swift VSOP87-lite | Sun / moon altitude, azimuth, phase |

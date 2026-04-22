@@ -106,6 +106,17 @@ enum FeatureVectorBuilder {
         )
         let sunVisibility = Float(max(0.0, sin(sunAltRad)))
 
+        // Persisted per-feature scales from AppSettings. Default
+        // 1.0 each so the vector shape is unchanged for users who
+        // haven't tuned them. Non-1 values come from the
+        // Hyperparameter autopilot writing a winning config back —
+        // the point of persisting them is that a subsequent manual
+        // ⌘T sees the same scaling and doesn't silently regress to
+        // baseline.
+        let reflectionScale = Float(AppSettings.shared.featureReflectionRiskScale)
+        let moonScale = Float(AppSettings.shared.featureMoonVisibilityScale)
+        let sunScale = Float(AppSettings.shared.featureSunVisibilityScale)
+
         return [
             Float(image.sunAltDeg / 90.0),
             Float(sin(sunAzRad)),
@@ -116,13 +127,13 @@ enum FeatureVectorBuilder {
             Float(image.moonPhase),
             camOneHot.color,
             camOneHot.mono,
-            Float(image.reflectionRiskScore),
+            Float(image.reflectionRiskScore) * reflectionScale,
             Float(image.transitionalRiskScore),
             hasForecast,
             cloudNorm,
             seeingNorm,
-            moonVisibility,
-            sunVisibility
+            moonVisibility * moonScale,
+            sunVisibility * sunScale
         ]
     }
 

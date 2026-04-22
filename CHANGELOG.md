@@ -4,6 +4,52 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.6.2] — 2026-04-22
+
+Rounds out the ML autopilot into a first-class workflow tool:
+persisted feature scales, prominent toolbar button, expanded in-app
+help, and docs / memory refresh.
+
+### Added
+- **Toolbar autopilot button** (brain icon) next to the auto-rate
+  button — single-click to open the sweep sheet. Turns blue while a
+  sweep is running so the state is visible globally, not just
+  inside the sheet.
+- **Inline help section** in the sweep sheet (`?` button in the
+  header, bottom-up) — question → answer blocks covering why the
+  sweep exists, what each column means, what the composite score
+  penalises, what the 12 configs probe, what Apply actually does,
+  when to re-run, and when it won't help.
+- **Persisted feature-scale multipliers** —
+  `AppSettings.featureMoonVisibilityScale`,
+  `featureSunVisibilityScale`,
+  `featureReflectionRiskScale`. Applied inside
+  `FeatureVectorBuilder.aux()` so a manual ⌘T after the autopilot
+  Apply keeps the same feature conditioning. Before 0.6.2 the
+  sweep's winning scale values were diagnostic only and a retrain
+  silently regressed to baseline.
+- **Autopilot Apply now writes all scales**, not just the
+  hyperparameters. One click → everything the winning config
+  encodes is live.
+
+### Changed
+- `ClassifierEngine.sweep()` neutralises persisted scales for the
+  duration of a run (via `defer` restore) so per-config scaling
+  stacks cleanly on a baseline vector rather than compounding
+  with AppSettings.
+- **README.md**: version bump to 0.6.2, ML section rewritten for
+  the MLP + autopilot era, new "Recommended workflow" section.
+- **tasks/lessons.md**: three new lessons (MLP feature-scale
+  amplification, automate-over-handtune, run ML sweep in-app
+  rather than XCTest).
+- **Memory (per-project)**: added `feedback_ml_autopilot_sweep.md`
+  (prefer the sweep over hand-tuning) and
+  `project_classifier_architecture.md` (current topology + 784-dim
+  vector + persisted scales).
+- **tasks/todo.md**: captures the confirmed winning config
+  (composite 0.714, class-5 leak 38 % → 7 %) as the Rheine
+  baseline for future regression checks.
+
 ## [0.6.1] — 2026-04-22
 
 ### Added

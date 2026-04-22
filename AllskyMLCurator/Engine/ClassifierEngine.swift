@@ -283,6 +283,11 @@ final class ClassifierEngine: ObservableObject {
         case running(done: Int, total: Int, currentName: String)
         case finished(results: [SweepResult])
         case failed(message: String)
+
+        var isRunning: Bool {
+            if case .running = self { return true }
+            return false
+        }
     }
 
     /// Run `configs` one after another on the current training set
@@ -292,6 +297,22 @@ final class ClassifierEngine: ObservableObject {
     /// moon-feature-scale combo minimises the class-5 → class-1/4
     /// leak?" without clicking through ⌘T twelve times by hand.
     func sweep(_ configs: [SweepConfig]) async -> [SweepResult] {
+        // Temporarily neutralise any persisted feature scales so the
+        // sweep's per-config multipliers aren't stacked on top of the
+        // AppSettings values. Restored in defer so a cancel / error
+        // still leaves settings untouched.
+        let savedMoonScale = AppSettings.shared.featureMoonVisibilityScale
+        let savedSunScale  = AppSettings.shared.featureSunVisibilityScale
+        let savedReflScale = AppSettings.shared.featureReflectionRiskScale
+        AppSettings.shared.featureMoonVisibilityScale = 1.0
+        AppSettings.shared.featureSunVisibilityScale  = 1.0
+        AppSettings.shared.featureReflectionRiskScale = 1.0
+        defer {
+            AppSettings.shared.featureMoonVisibilityScale = savedMoonScale
+            AppSettings.shared.featureSunVisibilityScale  = savedSunScale
+            AppSettings.shared.featureReflectionRiskScale = savedReflScale
+        }
+
         guard let diagnostics = try? await loadTrainingSet() else {
             sweepStatus = .failed(message: "No training set available.")
             return []

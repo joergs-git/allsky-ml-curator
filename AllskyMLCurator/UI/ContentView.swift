@@ -44,6 +44,7 @@ struct ContentView: View {
     @State private var showIngestSheet: Bool = false
     @State private var showWeatherIngestSheet: Bool = false
     @State private var showInfoPanel: Bool = true
+    @State private var showSweepSheet: Bool = false
     @State private var isLoading: Bool = false
     @State private var nightMode: Bool = AppSettings.shared.nightMode
 
@@ -141,6 +142,9 @@ struct ContentView: View {
             Task { await reload() }
         }) {
             WeatherIngestSheet(isPresented: $showWeatherIngestSheet)
+        }
+        .sheet(isPresented: $showSweepSheet) {
+            HyperparamSweepView(onDismiss: { showSweepSheet = false })
         }
         .background(
             Button("") { showWeatherIngestSheet = true }
@@ -283,6 +287,7 @@ struct ContentView: View {
                 }
 
             autoRateButton
+            sweepButton
 
             Spacer()
 
@@ -296,6 +301,30 @@ struct ContentView: View {
         .padding(.vertical, 10)
         .frame(height: 74)
         .background(AppColors.bgToolbar(nightMode))
+    }
+
+    // MARK: - Hyperparameter sweep shortcut
+
+    /// Prominent shortcut in the main toolbar — opens the
+    /// Hyperparameter autopilot sheet directly, without having to
+    /// dive into Preferences → Advanced. Same entry also lives in
+    /// Prefs for consistency; putting it top-level in the toolbar
+    /// reflects how central retuning-after-labeling-burst is to
+    /// the 0.6.x workflow.
+    private var sweepButton: some View {
+        Button {
+            showSweepSheet = true
+        } label: {
+            Image(systemName: "brain.head.profile")
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(
+                    classifier.sweepStatus.isRunning
+                    ? .blue
+                    : AppColors.fgDim(nightMode)
+                )
+        }
+        .buttonStyle(.plain)
+        .help("Open the ML hyperparameter autopilot — sweeps settings, ranks them, and applies the winner.")
     }
 
     // MARK: - Auto-rate
