@@ -4,6 +4,23 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.7.6] — 2026-04-22
+
+### Fixed
+- **Window management gets stuck after maximise** — green-button
+  fullscreen could leave the window chrome drifting outside the
+  visible screen area, hiding the menu bar and the traffic lights
+  so the user couldn't exit or shrink back. Three changes fix it:
+  1. `.defaultSize(width: 1400, height: 900)` so the app opens at a
+     sensible size instead of the 1100 × 720 content minimum.
+  2. `.windowResizability(.contentSize)` ties the window frame
+     strictly to the content's min/max, which makes macOS 14+
+     full-screen transitions round-trip cleanly.
+  3. New **Window → Reset Window** menu item (`⌃⌘0`) as an escape
+     hatch — exits full-screen if active, resets the window to
+     1400 × 900, re-centres on the current screen. Works even
+     when the title bar is out of reach.
+
 ## [0.7.5] — 2026-04-22
 
 ### Changed

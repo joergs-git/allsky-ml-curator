@@ -18,6 +18,19 @@ struct AllskyMLCuratorApp: App {
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified)
+        // Seed the window at a comfortable 1400 × 900 instead of its
+        // minimum 1100 × 720 — 0.7.6 fix. Without this the window
+        // opens at the SwiftUI content frame's minWidth, and once
+        // the user hit the green maximize / fullscreen button they
+        // couldn't shrink back to anything reasonable.
+        .defaultSize(width: 1400, height: 900)
+        // `.contentSize` keeps the window strictly tied to the
+        // SwiftUI content's min/max — hide-the-title-bar + ⌃⌘F full
+        // screen then behave predictably on macOS 14+. Before this
+        // the window chrome could drift out of the visible screen
+        // area after a maximize cycle, hiding the green traffic
+        // light behind the menu bar.
+        .windowResizability(.contentSize)
         .commands {
             // Replace the default New-from-template entry with our own
             // Open Folder command so Cmd+O is free and familiar.
@@ -46,6 +59,24 @@ struct AllskyMLCuratorApp: App {
                     )
                 }
                 .keyboardShortcut(.delete, modifiers: .command)
+            }
+            // Belt-and-suspenders escape hatch out of fullscreen /
+            // oversized window states. macOS normally provides this
+            // as ⌃⌘F on the View menu, but when the window chrome
+            // has drifted off-screen the default path can get stuck.
+            // Window → Reset Window resets to the default 1400 × 900
+            // size and exits fullscreen if active.
+            CommandGroup(after: .windowSize) {
+                Divider()
+                Button("Reset Window") {
+                    guard let win = NSApp.keyWindow else { return }
+                    if win.styleMask.contains(.fullScreen) {
+                        win.toggleFullScreen(nil)
+                    }
+                    win.setContentSize(NSSize(width: 1400, height: 900))
+                    win.center()
+                }
+                .keyboardShortcut("0", modifiers: [.command, .control])
             }
         }
 
