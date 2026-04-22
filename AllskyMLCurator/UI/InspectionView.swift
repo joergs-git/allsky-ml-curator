@@ -51,21 +51,27 @@ struct InspectionView: View {
     var body: some View {
         GeometryReader { geo in
             HStack(spacing: 0) {
+                leftMetadataPane
+                    .frame(width: 320, height: geo.size.height)
+                    .background(AppColors.bg(nightMode))
+
+                Divider()
+
                 imagePane
                     .frame(
-                        width: max(320, geo.size.width - 360),
+                        width: max(480, geo.size.width - 320 - 340),
                         height: geo.size.height
                     )
                     .background(AppColors.bg(nightMode))
 
                 Divider()
 
-                metadataPane
-                    .frame(width: 360, height: geo.size.height)
+                rightRatingPane
+                    .frame(width: 340, height: geo.size.height)
                     .background(AppColors.bg(nightMode))
             }
         }
-        .frame(minWidth: 900, minHeight: 600)
+        .frame(minWidth: 1320, minHeight: 780)
         .focusable()
         .focusEffectDisabled()
         .onKeyPress(phases: [.down, .repeat]) { press in handleKey(press) }
@@ -151,23 +157,42 @@ struct InspectionView: View {
         }
     }
 
-    /// Right pane: readable tables of the stuff that matters when
-    /// deciding whether a prediction looks right.
-    private var metadataPane: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                header
-                Divider()
-                timeBlock
-                ephemerisBlock
-                sensorBlock
-                motionBlock
-                ratingBlock
-                predictionBlock
-                Spacer(minLength: 20)
-            }
-            .padding(20)
+    /// Left pane (0.7.5): context metadata. Time + ephemeris +
+    /// sensor + cloud motion. Fixed-width so the centre image pane
+    /// can take the rest and the right pane shows the rating card.
+    /// No ScrollView — blocks are compact enough to fit on any
+    /// 780-pt-tall window without a scrollbar. Header here shows
+    /// the index + close button.
+    private var leftMetadataPane: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            header
+            Divider()
+            timeBlock
+            ephemerisBlock
+            sensorBlock
+            motionBlock
+            Spacer()
         }
+        .padding(20)
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    /// Right pane (0.7.5): the decision-makers. Big rating stars,
+    /// label source / flags, classifier prediction bars, and a
+    /// cheat-sheet for the keyboard commands. Keeps the curator's
+    /// eye on the actual call-to-action (rate this frame) without
+    /// scrolling past ephemeris metadata first.
+    private var rightRatingPane: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            ratingHero
+            Divider()
+            predictionBlock
+            Divider()
+            keyHintBlock
+            Spacer()
+        }
+        .padding(20)
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 
     // MARK: - Metadata blocks
@@ -285,20 +310,113 @@ struct InspectionView: View {
         }
     }
 
-    private var ratingBlock: some View {
-        VStack(alignment: .leading, spacing: 4) {
+    /// Big prominent rating card on the right pane. Shows the
+    /// current class as five stars at ~22 pt — the same visual
+    /// language as the matrix tile but at a size that reads from
+    /// across the room — plus coverage hint, source, flags. When
+    /// the frame is unrated the whole card is greyed and a helper
+    /// line nudges the curator to press 0-5. The ⌘T / ⌘⇧A etc.
+    /// shortcuts aren't surfaced here because we're focused on
+    /// per-frame rating.
+    private var ratingHero: some View {
+        VStack(alignment: .leading, spacing: 10) {
             sectionTitle("Rating")
-            if let item = currentItem, let label = item.label {
-                metaRow("Class", "\(label.ratingClass.rawValue) — \(label.ratingClass.shortName)")
+            if let item = currentItem, let label = item.label,
+               label.ratingClass != .unrated {
+                let cls = label.ratingClass
+                HStack(spacing: 4) {
+                    ForEach(0..<cls.rawValue, id: \.self) { _ in
+                        Image(systemName: "star.fill")
+                            .font(.system(size: 22, weight: .black))
+                            .foregroundStyle(
+                                AppColors.tier(cls, night: nightMode)
+                            )
+                    }
+                    ForEach(cls.rawValue..<5, id: \.self) { _ in
+                        Image(systemName: "star")
+                            .font(.system(size: 22, weight: .regular))
+                            .foregroundStyle(
+                                AppColors.fgDim(nightMode).opacity(0.5)
+                            )
+                    }
+                }
+                Text("\(cls.rawValue) — \(cls.shortName)  ·  \(cls.coverageHint)")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(AppColors.tier(cls, night: nightMode))
                 metaRow("Source", label.source.rawValue)
                 metaRow("Sample weight", String(format: "%.2f", label.sampleWeight))
-                if label.reflectionFlag { metaRow("Flags", "R (reflection)") }
-                if label.transitionalFlag { metaRow("Flags", "T (transitional)") }
+                HStack(spacing: 8) {
+                    if label.reflectionFlag {
+                        flagChip("R", color: AppColors.reflectionFlag(nightMode))
+                    }
+                    if label.transitionalFlag {
+                        flagChip("T", color: AppColors.transitionalFlag(nightMode))
+                    }
+                    if !label.reflectionFlag && !label.transitionalFlag {
+                        Text("no flags")
+                            .font(.caption)
+                            .foregroundStyle(AppColors.fgDim(nightMode))
+                    }
+                }
+                .padding(.top, 2)
             } else {
-                Text("unrated")
+                HStack(spacing: 4) {
+                    ForEach(0..<5, id: \.self) { _ in
+                        Image(systemName: "star")
+                            .font(.system(size: 22))
+                            .foregroundStyle(
+                                AppColors.fgDim(nightMode).opacity(0.35)
+                            )
+                    }
+                }
+                Text("UNRATED")
+                    .font(.headline.weight(.black))
+                    .foregroundStyle(AppColors.fgDim(nightMode))
+                Text("Press 0-5 to rate this frame, R / T to flag, ←/→ to move to the next tile.")
                     .font(.caption)
                     .foregroundStyle(AppColors.fgDim(nightMode))
+                    .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+
+    private func flagChip(_ symbol: String, color: Color) -> some View {
+        Text(symbol)
+            .font(.caption.weight(.black))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(color)
+            .clipShape(Capsule())
+    }
+
+    /// Compact keyboard cheat-sheet at the bottom of the right
+    /// pane. Tells the curator "you don't have to close this sheet
+    /// to rate and move on" — which is exactly the workflow the
+    /// 0.7.5 redesign enables.
+    private var keyHintBlock: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            sectionTitle("Keyboard")
+            VStack(alignment: .leading, spacing: 3) {
+                keyLine("0 - 5", "Apply rating (class)")
+                keyLine("R", "Toggle reflection flag")
+                keyLine("T", "Toggle transitional flag")
+                keyLine("Q / C", "Arm quick / certain for next digit")
+                keyLine("← / →", "Previous / next frame")
+                keyLine("Esc", "Close inspection")
+            }
+        }
+    }
+
+    private func keyLine(_ keys: String, _ label: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(keys)
+                .font(.caption.monospaced().weight(.bold))
+                .foregroundStyle(AppColors.fg(nightMode))
+                .frame(width: 56, alignment: .leading)
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(AppColors.fgDim(nightMode))
         }
     }
 

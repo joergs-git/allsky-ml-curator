@@ -4,6 +4,32 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.7.5] — 2026-04-22
+
+### Changed
+- **Inspection view redesigned to three-column layout** — left
+  metadata (Time, Ephemeris, Sensor, Cloud motion), centre image,
+  right rating + prediction + keyboard cheat-sheet. No scrollbar
+  at the 780-pt minimum height so every audit-relevant field is
+  visible at once.
+- Minimum window size bumped from 900 × 600 to 1320 × 780 to
+  accommodate the three-pane layout while keeping the image at
+  readable size (~660 pt square at the minimum height).
+- **Big rating hero** on the right pane — five stars at 22 pt
+  (same tier colour as the matrix tile band), class name +
+  coverage hint, source + sample weight + flags. When unrated, a
+  dim placeholder + "Press 0-5 to rate" hint.
+- **Keyboard cheat-sheet** card at the bottom of the right pane
+  tells the curator they can rate, flag, and ←/→ through the
+  audit set without closing the sheet — the workflow the redesign
+  enables.
+
+### Kept
+- Arrow-key navigation, 0-5 rating, R / T flag toggles, Q / C
+  confidence prefixes all work unchanged — the keyboard path was
+  already there from 0.4.x, the redesign just surfaces it
+  explicitly.
+
 ## [0.7.4] — 2026-04-22
 
 RatingClass is totally ordered (cloudiness is monotonic), but
