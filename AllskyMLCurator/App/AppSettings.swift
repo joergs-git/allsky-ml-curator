@@ -275,6 +275,20 @@ final class AppSettings {
         set { defaults.set(newValue, forKey: Key.nightOnlySunAltMax) }
     }
 
+    /// Moon altitude (in degrees) above which the moon becomes a
+    /// real reflection / sky-glow problem in the allsky frame.
+    /// Below this, the moon might be technically above the horizon
+    /// but too low to cause lens flare or serious glow — the site's
+    /// horizon mask, distant trees / buildings, and the camera's
+    /// zenith-cone crop hide it. 30° is the empirical threshold the
+    /// user measured at Rheine; adjustable for other sites. Used by
+    /// `MatrixTileCell.showMoonIcon` to gate the bottom-left moon
+    /// badge.
+    var moonAltitudeProblemThresholdDeg: Double {
+        get { defaults.double(forKey: Key.moonAltProblemThreshold, default: 30.0) }
+        set { defaults.set(newValue, forKey: Key.moonAltProblemThreshold) }
+    }
+
     /// Width of the MLP hidden layer. 128 is the 0.5.0 default —
     /// large enough to learn the non-linear "bright cloudy at day"
     /// vs "clear at day" split in Vision FeaturePrint space, small
@@ -399,6 +413,7 @@ final class AppSettings {
         static let mlpHiddenDim = "ml.mlpHiddenDim"
         static let nightOnlyMode = "ml.nightOnlyMode"
         static let nightOnlySunAltMax = "ml.nightOnlySunAltMaxDeg"
+        static let moonAltProblemThreshold = "overlay.moonAltProblemThresholdDeg"
         static let nightMode = "appearance.nightMode"
     }
 }

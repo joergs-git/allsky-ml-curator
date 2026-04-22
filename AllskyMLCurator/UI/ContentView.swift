@@ -451,15 +451,19 @@ struct ContentView: View {
     }
 
     /// Horizontal progress gauge for embedding coverage. Animates
-    /// while the warmer is actively running. Clicking re-triggers
-    /// `EmbeddingWarmer.run()` so a mid-session catch-up pass picks
-    /// up anything rated after the launch-time pass finished — the
-    /// fix for the "chip stuck at X / Y" symptom where the user had
-    /// rated ~2.4k frames but the warmer's launch snapshot was
-    /// already closed.
+    /// while the warmer is actively running. Clicking *toggles* the
+    /// warmer: if idle or complete, a click starts a fresh pass;
+    /// if already running, the same click cancels it. Cancelling
+    /// leaves already-written sidecars on disk untouched — the next
+    /// re-run simply skips them via `sidecarExists`, so the stop/
+    /// start cycle is lossless.
     private var embeddingGauge: some View {
         Button {
-            EmbeddingWarmer.shared.run()
+            if warmer.isRunning {
+                EmbeddingWarmer.shared.cancel()
+            } else {
+                EmbeddingWarmer.shared.run()
+            }
         } label: {
             GaugeChip(
                 title: "Embeddings",
@@ -467,7 +471,7 @@ struct ContentView: View {
                 range: 0...Double(max(items.count, 1)),
                 primaryText: "\(embeddedCount) / \(items.count)",
                 secondaryText: embeddingGaugeSecondaryText,
-                iconName: "cpu",
+                iconName: embeddingGaugeIcon,
                 iconAnimates: warmer.isRunning,
                 tint: embeddingGaugeTint,
                 nightMode: nightMode
@@ -475,15 +479,21 @@ struct ContentView: View {
         }
         .buttonStyle(.plain)
         .help(embeddingGaugeHelpText)
-        .disabled(warmer.isRunning && warmer.phase == .scanning)
+    }
+
+    private var embeddingGaugeIcon: String {
+        // "stop.fill" while a pass is running (click again to stop),
+        // "cpu" otherwise — reinforces the chip-state that the click
+        // is a toggle rather than always a "start".
+        warmer.isRunning ? "stop.fill" : "cpu"
     }
 
     private var embeddingGaugeSecondaryText: String {
         if warmer.isRunning {
             switch warmer.phase {
-            case .scanning:  return "scanning…"
-            case .rated:     return "rated \(warmer.done)/\(warmer.total)"
-            case .unrated:   return "unrated \(warmer.done)/\(warmer.total)"
+            case .scanning:  return "scanning… · click to stop"
+            case .rated:     return "rated \(warmer.done)/\(warmer.total) · stop"
+            case .unrated:   return "unrated \(warmer.done)/\(warmer.total) · stop"
             case .idle:      return "warming…"
             }
         }
@@ -498,7 +508,7 @@ struct ContentView: View {
 
     private var embeddingGaugeHelpText: String {
         if warmer.isRunning {
-            return "Vision FeaturePrint warmer is running — click again does nothing until it finishes."
+            return "Vision FeaturePrint warmer is running — click to stop. Already-written sidecars stay on disk; the next re-run picks up from where it left off."
         }
         return "Vision FeaturePrint sidecar coverage. Click to re-run the warmer if the chip looks stuck after a rating burst."
     }

@@ -52,6 +52,39 @@ struct MatrixTileCell: View {
         return prediction.topClass != ratingClass
     }
 
+    /// Combined "is the moon likely visible and bright enough to
+    /// matter" score in 0…1. Multiplies illumination (moonPhase, 0 =
+    /// new, 1 = full) by the moon's altitude-projected brightness
+    /// (sin(alt) — peaks at zenith). Below the horizon or new moon →
+    /// 0. Full moon at zenith → 1. Drives the *opacity* of the moon
+    /// badge; whether the badge shows at all is gated by
+    /// `AppSettings.moonAltitudeProblemThresholdDeg` (default 30° —
+    /// below that, the moon is either behind the horizon mask or
+    /// too low-intensity to be a real lens-flare problem).
+    private var moonRiskScore: Double {
+        let alt = item.image.moonAltDeg
+        guard alt > 0 else { return 0 }
+        let sinAlt = sin(alt * .pi / 180.0)
+        return max(0, item.image.moonPhase * sinAlt)
+    }
+
+    private var showMoonIcon: Bool {
+        let threshold = AppSettings.shared.moonAltitudeProblemThresholdDeg
+        return item.image.moonAltDeg >= threshold
+            && item.image.moonPhase > 0.05
+    }
+
+    /// Automatic per-frame reflection risk (0…1) derived at ingest
+    /// from sun/moon geometry + exposure — distinct from the
+    /// curator's own `R` flag which sits on the LabelRecord. We show
+    /// both so the audit workflow can compare the human call against
+    /// the pre-computed geometric prediction.
+    private var autoReflectionRisk: Double {
+        item.image.reflectionRiskScore
+    }
+
+    private var showReflectionIcon: Bool { autoReflectionRisk > 0.2 }
+
     private var tierColor: Color {
         AppColors.tier(ratingClass, night: nightMode)
     }
@@ -96,9 +129,21 @@ struct MatrixTileCell: View {
                     }
                 }
                 Spacer()
-                if hasReflection {
-                    HStack {
-                        Spacer()
+                HStack(alignment: .bottom, spacing: 4) {
+                    // Auto-computed risk indicators sit in the bottom
+                    // corners regardless of rating state — the
+                    // underlying signals come from ingest-time
+                    // ephemeris + geometry, not from user labels.
+                    HStack(spacing: 4) {
+                        if showMoonIcon { moonRiskIcon }
+                        if showReflectionIcon { reflectionRiskIcon }
+                    }
+                    .padding(.leading, bandWidth + 4)
+                    .padding(.bottom, bandWidth + 4)
+
+                    Spacer()
+
+                    if hasReflection {
                         flagBadge("R", color: AppColors.reflectionFlag(nightMode))
                             .padding(.trailing, bandWidth + 4)
                             .padding(.bottom, bandWidth + 4)
@@ -198,6 +243,53 @@ struct MatrixTileCell: View {
                 .fill(AppColors.bgControl(nightMode))
                 .overlay { ProgressView().controlSize(.small) }
         }
+    }
+
+    /// Moon icon that only shows when the moon is above the horizon
+    /// AND illuminated enough to matter. Alpha is scaled by the
+    /// combined phase × altitude score so a full moon at zenith is
+    /// fully opaque and a half-moon just above the horizon is faint.
+    /// SF Symbol `moon.fill` stays recognisable at tile-grid sizes.
+    private var moonRiskIcon: some View {
+        let alpha = max(0.45, min(1.0, moonRiskScore * 1.5))
+        let tooltip = String(
+            format: "Moon risk %.0f %%  ·  alt %.0f°  ·  phase %.0f %%",
+            moonRiskScore * 100,
+            item.image.moonAltDeg,
+            item.image.moonPhase * 100
+        )
+        return Image(systemName: "moon.fill")
+            .font(.system(size: 10, weight: .black))
+            .foregroundStyle(Color.white.opacity(alpha))
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(Color(red: 0.85, green: 0.72, blue: 0.35).opacity(alpha))
+            .clipShape(Capsule())
+            .shadow(color: .black.opacity(0.5), radius: 1, y: 1)
+            .help(tooltip)
+    }
+
+    /// Auto-reflection-risk icon — `sparkles` in orange. Distinct from
+    /// the user's `R` label (bottom-right): this one is geometric /
+    /// ingest-time, the `R` flag is a curator judgement. Seeing both
+    /// on the same tile means "computer and human agree there's a
+    /// risk"; seeing just one lets you spot where the pre-filter
+    /// missed something or vice-versa.
+    private var reflectionRiskIcon: some View {
+        let alpha = max(0.45, min(1.0, autoReflectionRisk))
+        let tooltip = String(
+            format: "Auto reflection risk %.0f %%",
+            autoReflectionRisk * 100
+        )
+        return Image(systemName: "sparkles")
+            .font(.system(size: 10, weight: .black))
+            .foregroundStyle(Color.white.opacity(alpha))
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(Color.orange.opacity(alpha))
+            .clipShape(Capsule())
+            .shadow(color: .black.opacity(0.5), radius: 1, y: 1)
+            .help(tooltip)
     }
 
     /// 1..5 stars in the tier color, with a dark background plate so

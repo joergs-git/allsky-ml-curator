@@ -35,6 +35,17 @@ struct InspectionView: View {
     @State private var motion: CloudMotionDetector.Motion?
     @State private var motionComputing: Bool = false
 
+    /// Full-resolution decoded frame for the inspected tile. Kept in
+    /// SwiftUI state + loaded via a detached task (`loadFullImage`)
+    /// because the synchronous `NSImage(contentsOf:)` path on a
+    /// sandboxed main-actor call silently fails on SMB mounts even
+    /// when the BookmarkStore has granted access to the parent
+    /// folder — thumbnails survive because `ThumbnailCache` already
+    /// goes through `CGImageSourceCreateWithURL` on a detached task.
+    /// We now mirror that pattern for the inspection view.
+    @State private var fullImage: NSImage?
+    @State private var fullImageFailed: Bool = false
+
     // MARK: - Body
 
     var body: some View {
@@ -61,6 +72,42 @@ struct InspectionView: View {
         .task(id: index) {
             await recomputeMotion()
         }
+        .task(id: index) {
+            await loadFullImage()
+        }
+    }
+
+    /// Robust async load using the same ImageIO path ThumbnailCache
+    /// uses for thumbnails. `CGImageSourceCreateWithURL` + index 0
+    /// → CGImage → NSImage goes through the sandbox-friendly read
+    /// route that honours security-scoped bookmarks on SMB volumes.
+    /// Main-actor-only state writes; decode happens on a detached
+    /// worker so the UI doesn't stall on a 1-MB JPEG fetch from
+    /// a slow mount.
+    private func loadFullImage() async {
+        fullImage = nil
+        fullImageFailed = false
+        guard let item = currentItem else {
+            fullImageFailed = true
+            return
+        }
+        let path = item.image.filePath
+        let decoded: NSImage? = await Task.detached(priority: .userInitiated) {
+            () -> NSImage? in
+            let url = URL(fileURLWithPath: path)
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  let cg = CGImageSourceCreateImageAtIndex(source, 0, nil)
+            else { return nil }
+            return NSImage(
+                cgImage: cg,
+                size: NSSize(width: cg.width, height: cg.height)
+            )
+        }.value
+        if let decoded {
+            fullImage = decoded
+        } else {
+            fullImageFailed = true
+        }
     }
 
     // MARK: - Panes
@@ -72,15 +119,12 @@ struct InspectionView: View {
     /// masked version elsewhere.
     private var imagePane: some View {
         Group {
-            if let item = currentItem,
-               let nsImage = NSImage(
-                contentsOf: URL(fileURLWithPath: item.image.filePath)
-               ) {
-                Image(nsImage: nsImage)
+            if let fullImage {
+                Image(nsImage: fullImage)
                     .resizable()
                     .scaledToFit()
                     .padding(16)
-            } else {
+            } else if fullImageFailed {
                 VStack(spacing: 8) {
                     Image(systemName: "photo.badge.exclamationmark")
                         .font(.system(size: 48))
@@ -90,8 +134,19 @@ struct InspectionView: View {
                         .foregroundStyle(AppColors.fgDim(nightMode))
                         .textSelection(.enabled)
                         .multilineTextAlignment(.center)
+                    if currentItem != nil {
+                        Text("Couldn't decode the JPEG. Check that the volume is mounted and Preferences → Advanced → Grant folder access covers the parent directory.")
+                            .font(.caption2)
+                            .foregroundStyle(AppColors.fgVeryDim(nightMode))
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 360)
+                    }
                 }
                 .padding()
+            } else {
+                // Loading state — small indeterminate spinner.
+                ProgressView()
+                    .controlSize(.large)
             }
         }
     }

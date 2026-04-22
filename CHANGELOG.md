@@ -4,6 +4,49 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.5.4] — 2026-04-22
+
+Two new at-a-glance risk icons on every matrix tile (driven by
+ingest-time ephemeris + geometry), a tunable moon-problem
+threshold, a stop/restart toggle on the Embeddings chip, and a
+fix for the broken-image placeholder in Inspection.
+
+### Added
+- **Moon-risk icon** (bottom-left, golden capsule with SF Symbol
+  `moon.fill`). Shown when `moon_alt_deg ≥ threshold` AND the moon
+  is not new. Opacity scales with `moon_phase × sin(moon_alt)` so
+  a full moon at zenith is vivid, a half-moon near the threshold
+  is faint. Tooltip: exact alt / phase / combined score.
+- **Reflection-risk icon** (bottom-left, orange capsule with SF
+  Symbol `sparkles`). Driven by the pre-computed
+  `reflection_risk_score` on `ImageRecord` — distinct from the
+  curator's own `R` label (bottom-right), which is a human
+  judgement. Shown when the auto score > 0.2. Tooltip shows the
+  exact percentage.
+- **Preferences → Training → Overlay thresholds → Moon altitude
+  problem** slider (0°…90°, default 30°). Below the threshold,
+  moon-badges are hidden: 30° matches the Rheine site where the
+  horizon mask + camera geometry suppresses anything lower. Raise
+  for treed horizons, lower for exposed ones.
+- **Embeddings chip is now a stop/start toggle.** Click while the
+  warmer is idle or complete → starts a fresh pass. Click while it
+  is running → cancels. Icon flips between `cpu` and `stop.fill`
+  so the chip-state reinforces what the next click will do.
+  Cancelling leaves already-written sidecars on disk; a subsequent
+  re-run skips them via `sidecarExists` and resumes where it left
+  off, so the cycle is lossless.
+
+### Fixed
+- **Inspection view now actually shows the full frame.**
+  `NSImage(contentsOf:)` was being called synchronously on
+  MainActor from the View body, which silently failed on SMB
+  mounts even with a valid security-scoped bookmark in place. The
+  image now loads via `CGImageSourceCreateWithURL` on a detached
+  `userInitiated` task (same code path the `ThumbnailCache` uses
+  — and was already working for tile thumbnails). A loading
+  spinner shows during decode; a descriptive error with a
+  Preferences-pointer shows if the decode fails.
+
 ## [0.5.3] — 2026-04-19
 
 Adds a night-only filter so the classifier doesn't have to fight

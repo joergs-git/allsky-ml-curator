@@ -40,6 +40,7 @@ struct PreferencesView: View {
     @State private var autoMinLabels: Int       = AppSettings.shared.autonomousMinLabels
     @State private var nightOnlyMode: Bool      = AppSettings.shared.nightOnlyMode
     @State private var nightOnlySunAltMax: Double = AppSettings.shared.nightOnlySunAltMaxDeg
+    @State private var moonAltProblemThreshold: Double = AppSettings.shared.moonAltitudeProblemThresholdDeg
 
     // MARK: - Advanced tab state
 
@@ -299,6 +300,21 @@ struct PreferencesView: View {
                 }
 
                 Text("Standard thresholds: −6° civil darkness · −12° nautical darkness · −18° astronomical night (strictest, no twilight glow at all).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Section("Overlay thresholds") {
+                sliderRow(
+                    label: "Moon altitude problem",
+                    value: $moonAltProblemThreshold,
+                    range: 0.0 ... 90.0,
+                    step: 1.0,
+                    displayFormat: "%.0f°"
+                ) { new in AppSettings.shared.moonAltitudeProblemThresholdDeg = new }
+
+                Text("Bottom-left moon badge on each tile only shows when the moon is **at or above** this altitude. Below, the moon is either behind the horizon mask or too low to cause real lens flare / sky glow. Default 30° — a sensible Rheine-site value. Raise if trees / buildings obscure more, lower on sites with an exposed horizon.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
