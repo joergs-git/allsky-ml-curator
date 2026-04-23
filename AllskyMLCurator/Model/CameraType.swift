@@ -41,6 +41,26 @@ enum CameraType: String, Codable, CaseIterable, Sendable {
         !dayCapable && sunAltDeg > dayExclusionSunAltDeg
     }
 
+    /// 0.8.4: raw-value list of the `ImageRecord.CameraSource` cases
+    /// that belong to this camera type. Used when a query needs to
+    /// filter `images.cameraSource` by camera — a mono camera covers
+    /// both `mono_allsky_jpg` and `mono_allsky_fits` on disk, so a
+    /// single enum case isn't enough. Mirrors the private helper in
+    /// `ImageLibrary.sources(for:)` and is exposed on the type so UI
+    /// code can build WHERE-IN clauses without going through the
+    /// library.
+    var filePathCameraSources: [String] {
+        switch self {
+        case .color:
+            return [ImageRecord.CameraSource.colorAllskyJpg.rawValue]
+        case .monochrome:
+            return [
+                ImageRecord.CameraSource.monoAllskyJpg.rawValue,
+                ImageRecord.CameraSource.monoAllskyFits.rawValue
+            ]
+        }
+    }
+
     /// Map `(type, file extension)` to the concrete `ImageRecord.CameraSource`
     /// used on disk rows.
     func cameraSource(for fileExtension: String) -> ImageRecord.CameraSource? {

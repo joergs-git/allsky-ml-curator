@@ -4,6 +4,44 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.8.4] — 2026-04-23
+
+**Sweep gets a camera scope + a "hunt class-2 by sky-temp" seeding
+helper in the weather-filtered ingest.** 0.8.2 shipped two per-
+camera MLPs but the sweep stayed camera-blind, pulling all rated
+samples and fitting a mixed classifier — the autopilot's ranking
+had no idea which camera it was tuning. Parallel problem on the
+data side: mono currently trains on 385 class-2 samples (7 % of the
+set) and colour on only 17 — not enough for either model to learn
+the boundary well. The seeding helper uses the existing class-2
+sky-temp distribution to propose more-likely-class-2 candidates.
+
+### Added
+- **Sweep camera scope picker** (`HyperparamSweepView`): segmented
+  `Colour` / `Mono` next to the Run button. Default `.color`.
+  Disabled while a sweep is running so a mid-run swap can't
+  corrupt the in-flight ranking.
+- **`ClassifierEngine.sweep(_:cameraScope:)`** — optional camera
+  filter, plumbed through to `loadTrainingSet(cameraType:)`. Error
+  message now names the scope when a filter ends up empty so the
+  user knows *which* camera has zero samples.
+- **"Seed window from current class-2 labels" button** in
+  `WeatherIngestSheet` (next to the sky-temp fields). Reads the
+  IQR (p25…p75) of the currently-labelled class-2 frames for the
+  selected camera from the local DB, pads ±0.5 °C, and widens the
+  date window to all-time (2023-01-01 → today). One click
+  transforms the sheet from "pick a temperature by intuition" to
+  "hunt the temperature range where class-2 actually lives".
+- **`CameraType.filePathCameraSources`** — raw-value list of the
+  `ImageRecord.CameraSource` cases that belong to a camera type.
+  Exposed on the enum so UI code can build WHERE-IN clauses without
+  going through the private `ImageLibrary.sources(for:)` helper.
+
+### Fixed
+- "ready to train" coverage subtitle said `N/5 classes` since 0.8.0
+  collapsed the scheme to three. Now reads `N/3`. (slipped from
+  0.8.3; repeated here for release-notes clarity)
+
 ## [0.8.3] — 2026-04-23
 
 **Per-camera classifier surfacing in the info side panel.** 0.8.2

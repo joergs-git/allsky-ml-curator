@@ -18,6 +18,13 @@ struct HyperparamSweepView: View {
     @State private var copyFeedback: String?
     @State private var showHelp: Bool = false
 
+    /// 0.8.4: which camera's MLP the sweep is tuning. Before this the
+    /// sweep pulled all rated samples and trained a mixed classifier
+    /// — useless since 0.8.2 split the model per camera. Default is
+    /// `.color` because the colour model has the richer label set and
+    /// is the one users start tuning first; mono is explicitly opt-in.
+    @State private var cameraScope: CameraType = .color
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -66,11 +73,28 @@ struct HyperparamSweepView: View {
             if case let .finished(results) = classifier.sweepStatus {
                 copyButton(for: results)
             }
+            cameraScopePicker
             primaryButton
             Button("Close", action: onDismiss)
                 .keyboardShortcut(.escape)
         }
         .padding(12)
+    }
+
+    /// Segmented picker that pins the sweep to one of the two
+    /// per-camera MLPs. Disabled while a sweep is running — switching
+    /// camera mid-run would invalidate the in-flight results.
+    private var cameraScopePicker: some View {
+        Picker("Scope", selection: $cameraScope) {
+            ForEach(CameraType.allCases, id: \.self) { cam in
+                Text(cam == .color ? "Colour" : "Mono").tag(cam)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: 150)
+        .disabled(classifier.sweepStatus.isRunning)
+        .help("Which camera's classifier the sweep tunes. Since 0.8.2 we train one MLP per camera; the sweep must pick one at a time. Run colour, apply the winner, then run mono separately.")
     }
 
     /// Copy the full ranked results table to the system pasteboard
@@ -390,8 +414,9 @@ Plus a baseline (your current Preferences) and a kitchen-sink "aggro" config tha
     private func startSweep() {
         runTask?.cancel()
         let grid = ClassifierEngine.defaultSweepGrid()
+        let scope = cameraScope
         runTask = Task { @MainActor in
-            _ = await classifier.sweep(grid)
+            _ = await classifier.sweep(grid, cameraScope: scope)
         }
     }
 

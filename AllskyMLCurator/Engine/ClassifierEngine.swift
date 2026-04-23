@@ -349,7 +349,10 @@ final class ClassifierEngine: ObservableObject {
     /// data-driven answer to "which class-weight / hidden-dim /
     /// moon-feature-scale combo minimises the class-5 → class-1/4
     /// leak?" without clicking through ⌘T twelve times by hand.
-    func sweep(_ configs: [SweepConfig]) async -> [SweepResult] {
+    func sweep(
+        _ configs: [SweepConfig],
+        cameraScope: CameraType? = nil
+    ) async -> [SweepResult] {
         // Temporarily neutralise any persisted feature scales so the
         // sweep's per-config multipliers aren't stacked on top of the
         // AppSettings values. Restored in defer so a cancel / error
@@ -366,13 +369,23 @@ final class ClassifierEngine: ObservableObject {
             AppSettings.shared.featureReflectionRiskScale = savedReflScale
         }
 
-        guard let diagnostics = try? await loadTrainingSet() else {
+        // 0.8.4: filter the sweep's training set by camera so the
+        // hyperparameter picks reflect the per-camera classifier we
+        // actually ship since 0.8.2. Without the filter the sweep
+        // mixes colour + mono back into one shared model and its
+        // ranking is blind to the two-classifier split.
+        guard let diagnostics = try? await loadTrainingSet(
+            cameraType: cameraScope
+        ) else {
             sweepStatus = .failed(message: "No training set available.")
             return []
         }
         let baseSamples = diagnostics.samples
         guard !baseSamples.isEmpty else {
-            sweepStatus = .failed(message: "0 samples after filters — flip off Night-only / adjust threshold.")
+            let scopeName = cameraScope?.displayName ?? "any camera"
+            sweepStatus = .failed(
+                message: "0 samples for \(scopeName) after filters — adjust night-only / scope."
+            )
             return []
         }
         var classCounts = [Int](repeating: 0, count: numClasses)

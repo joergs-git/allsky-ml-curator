@@ -1,4 +1,5 @@
 import AppKit
+import GRDB
 import SwiftUI
 
 /// Weather-filtered ingest: the curator picks a sky-temperature
@@ -39,6 +40,11 @@ struct WeatherIngestSheet: View {
     @State private var sampleFilenames: [String] = []
     @State private var ingestMode: IngestMode = .idle
 
+    /// 0.8.4: result of the "seed from class-2 labels" action. Shown
+    /// inline under the sky-temp fields so the user understands why
+    /// the window jumped to those exact values.
+    @State private var seedSummary: String?
+
     enum QueryState: Equatable {
         case idle
         case querying
@@ -77,6 +83,30 @@ struct WeatherIngestSheet: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+
+                    // 0.8.4: "hunt more class-2 frames" helper. Reads
+                    // the IQR of current class-2 sky-temps for the
+                    // selected camera and writes it into the fields,
+                    // also widens the date window to "all time" —
+                    // class-2 frames can come from any historical
+                    // session, not just the default last-30-days.
+                    Divider()
+                    HStack {
+                        Button {
+                            seedFromClassTwo()
+                        } label: {
+                            Label("Seed window from current class-2 labels",
+                                  systemImage: "target")
+                        }
+                        .help("Reads the sky-temp IQR (p25…p75) of frames currently labelled class-2 for the selected camera, pads ±0.5 °C, and widens the date window to cover all history. Higher probability of finding more class-2 candidates than a manual guess.")
+                        Spacer()
+                    }
+                    if let seedSummary {
+                        Text(seedSummary)
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
 
                 Section("Date window") {
@@ -242,6 +272,91 @@ struct WeatherIngestSheet: View {
 
     private var newFileCount: Int {
         max(0, candidateFiles.count - duplicateCount)
+    }
+
+    // MARK: - Class-2 seeding
+
+    /// 0.8.4: drive the "hunt more class-2 frames" workflow. Reads
+    /// the sky-temp IQR of current class-2 labels for the selected
+    /// camera, pads ±0.5 °C, widens the date window to all-time, and
+    /// kicks a fresh query. Falls back with an informative message
+    /// when fewer than 5 class-2 labels exist (IQR is unreliable at
+    /// that point — user should hand-pick a window instead).
+    private func seedFromClassTwo() {
+        let cam = cameraType
+        let sources = cam.filePathCameraSources
+        Task {
+            do {
+                let values: [Double] = try await Database.shared.reader.read { db in
+                    // Hand-SQL rather than GRDB query-interface so we
+                    // can inline the image-label join + the night-only
+                    // sun-alt filter in one pass. Rated night class-2
+                    // frames only; ignore auto-labels so noisy
+                    // predictions don't skew the seed window.
+                    let sourcesList = sources
+                        .map { "'\($0)'" }
+                        .joined(separator: ",")
+                    let rows = try Row.fetchAll(db, sql: """
+                        SELECT i.cloudwatcherSkyTempC AS t
+                        FROM labels l
+                        JOIN images i ON i.id = l.imageId
+                        WHERE l.isCurrent = 1
+                          AND l.source = 'human'
+                          AND l.ratingClass = 2
+                          AND i.cloudwatcherSkyTempC IS NOT NULL
+                          AND i.sunAltDeg < -12
+                          AND i.cameraSource IN (\(sourcesList))
+                        ORDER BY t ASC
+                        """)
+                    return rows.compactMap { $0["t"] as Double? }
+                }
+                await MainActor.run {
+                    applySeedWindow(from: values, cam: cam)
+                }
+            } catch {
+                await MainActor.run {
+                    seedSummary = "Seed failed: " +
+                        ((error as? LocalizedError)?.errorDescription
+                         ?? String(describing: error))
+                }
+            }
+        }
+    }
+
+    /// Given the sorted list of class-2 sky-temps, pick the window
+    /// and rewrite the UI fields. IQR (p25…p75) + 0.5 °C pad keeps
+    /// the query on the dense part of the distribution; the long
+    /// tail above p75 / below p25 is typically mis-labels or
+    /// edge-of-class frames and would dilute the hunt.
+    private func applySeedWindow(from values: [Double], cam: CameraType) {
+        guard values.count >= 5 else {
+            seedSummary = "Need ≥ 5 class-2 labels for \(cam.displayName); found \(values.count). Hand-pick a window or rate more class-2 first."
+            return
+        }
+        let n = values.count
+        let p25 = values[Int(0.25 * Double(n - 1))]
+        let p75 = values[Int(0.75 * Double(n - 1))]
+        // Round to one decimal so the UI fields don't show long
+        // floating-point tails.
+        let roundTenth: (Double) -> Double = { (x: Double) in
+            (x * 10).rounded() / 10
+        }
+        let padded = (min: roundTenth(p25 - 0.5),
+                      max: roundTenth(p75 + 0.5))
+        skyTempMin = padded.min
+        skyTempMax = padded.max
+        // All-time window: Supabase data starts late 2023 at the
+        // earliest, so 2023-01-01 is a safe lower bound that still
+        // fits well under the 20 000-row PostgREST limit.
+        dateFrom = Calendar.current.date(
+            from: DateComponents(year: 2023, month: 1, day: 1)
+        ) ?? dateFrom
+        dateTo = Date()
+        seedSummary = String(
+            format: "Seeded from %d class-2 \(cam.displayName) labels · p25=%.1f °C, p75=%.1f °C · padded window %.1f … %.1f °C, all-time.",
+            n, p25, p75, padded.min, padded.max
+        )
+        runQuery()
     }
 
     // MARK: - Queries
