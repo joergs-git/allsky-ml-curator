@@ -208,6 +208,8 @@ struct ContentView: View {
         HStack(spacing: 16) {
             brandBadge
 
+            howToStartButton
+
             Divider().frame(height: 42)
 
             Menu {
@@ -318,6 +320,35 @@ struct ContentView: View {
         .padding(.vertical, 10)
         .frame(height: 74)
         .background(AppColors.bgToolbar(nightMode))
+    }
+
+    // MARK: - How-to-start shortcut
+
+    /// Onboarding entry point rendered immediately next to the brand
+    /// badge. Opens a standalone floating NSWindow (not a sheet) so a
+    /// first-time curator can keep the workflow visible while they
+    /// click through the matrix. The button stays useful long-term as
+    /// a quick-reference sidebar — click to surface, close to dismiss.
+    private var howToStartButton: some View {
+        Button {
+            HowToStartWindowController.shared.show()
+        } label: {
+            Label {
+                Text("How to start")
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+            } icon: {
+                Image(systemName: "graduationcap.fill")
+            }
+            .labelStyle(.titleAndIcon)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+        }
+        .buttonStyle(.borderless)
+        .background(
+            Capsule().fill(Color.accentColor.opacity(0.18))
+        )
+        .foregroundStyle(Color.accentColor)
+        .help("Open the step-by-step workflow guide (floating window, keep it next to the matrix).")
     }
 
     // MARK: - Hyperparameter sweep shortcut

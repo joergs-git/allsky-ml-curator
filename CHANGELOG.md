@@ -4,6 +4,31 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.8.5] — 2026-04-23
+
+**"How to start" floating reference in the toolbar.** The idiomatic
+workflow (bootstrap once → sweep once → loop on auto-rate / audit /
+retrain / re-ingest) is load-bearing and easy to get wrong — e.g.
+running the sweep every iteration instead of once per phase, or
+expecting auto-rate to rewrite human labels. One discoverable button
+on the left of the toolbar, a floating window that stays on top
+while you work.
+
+### Added
+- **"How to start" toolbar button** — graduation-cap icon next to
+  the brand badge, accent-tinted capsule. Opens a floating window.
+- **`HowToStartView`** — two-phase workflow guide: Phase 1
+  Bootstrap (ingest → embed → rate → train → sweep once) and
+  Phase 2 Daily Loop (auto-rate → audit → retrain → targeted
+  re-ingest). Plus "when to re-run the autopilot" and "good to
+  know" nuance blocks (embed is permanent, train cheap, sweep
+  expensive, auto-rate non-destructive, ⌘T trains both cameras).
+- **`HowToStartWindowController`** — singleton manager for the
+  floating NSWindow. `level = .floating` keeps it above the main
+  matrix; second click on the toolbar button brings the existing
+  window forward rather than spawning duplicates; auto-nils on
+  close so the next open is clean.
+
 ## [0.8.4] — 2026-04-23
 
 **Sweep gets a camera scope + a "hunt class-2 by sky-temp" seeding
