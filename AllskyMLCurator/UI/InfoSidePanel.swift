@@ -20,6 +20,39 @@ struct InfoSidePanel: View {
     @ObservedObject var sync: SyncEngine
     let nightMode: Bool
 
+    /// 0.8.3: which camera's classifier stats the panel surfaces.
+    /// Derives from the selected frame (if any), else the dominant
+    /// camera in the current matrix view, else `.color`. Classifier
+    /// numbers differ per camera since 0.8.2 — one MLP per camera —
+    /// so pinning the panel to one camera at a time is clearer than
+    /// showing colour's stats when the curator is inspecting a mono
+    /// frame.
+    private var activeCamera: CameraType {
+        if let focused = focusedFrame {
+            return focused.image.cameraSource.cameraType
+        }
+        // Homogeneous matrix view (camera filter set) — use its
+        // camera. Mixed view — default to colour.
+        if let firstCam = items.first?.image.cameraSource.cameraType,
+           let lastCam = items.last?.image.cameraSource.cameraType,
+           firstCam == lastCam {
+            return firstCam
+        }
+        return .color
+    }
+
+    /// Summary for whichever camera the panel is currently surfacing.
+    /// Falls back to the headline summary so a freshly-installed app
+    /// with only one camera trained still shows something meaningful
+    /// if `activeCamera` points at the untrained side.
+    private var activeSummary: ClassifierEngine.TrainingSummary? {
+        classifier.cameraSummaries[activeCamera] ?? classifier.summary
+    }
+
+    private var activeCoverage: ClassifierEngine.TrainingCoverage? {
+        classifier.cameraCoverages[activeCamera] ?? classifier.lastCoverage
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -171,7 +204,11 @@ struct InfoSidePanel: View {
 
     private var classifierSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            sectionHeader("Classifier", icon: "brain.head.profile")
+            HStack(spacing: 8) {
+                sectionHeader("Classifier", icon: "brain.head.profile")
+                Spacer()
+                cameraScopePill(activeCamera)
+            }
 
             if classifier.isTraining {
                 HStack(spacing: 8) {
@@ -183,7 +220,7 @@ struct InfoSidePanel: View {
                         .font(.title3.weight(.bold))
                         .foregroundStyle(.blue)
                 }
-            } else if let summary = classifier.summary {
+            } else if let summary = activeSummary {
                 // Headline number = 5-fold CV accuracy (honest
                 // generalisation), falls back to train accuracy when
                 // the dataset is too small to split into five usable
@@ -219,12 +256,12 @@ struct InfoSidePanel: View {
                 if let confusion = summary.confusionMatrix {
                     confusionMatrixView(confusion)
                 }
-            } else if let coverage = classifier.lastCoverage {
+            } else if let coverage = activeCoverage {
                 let classesSeen = coverage.classCounts.filter { $0 > 0 }.count
                 BigMetric(
                     label: "ready to train",
                     primary: "\(coverage.withEmbedding)",
-                    secondary: "of \(coverage.totalRated) rated · \(classesSeen)/5 classes",
+                    secondary: "of \(coverage.totalRated) rated · \(classesSeen)/3 classes",
                     accent: classesSeen >= 2 ? .green : .orange,
                     nightMode: nightMode
                 )
@@ -652,6 +689,28 @@ struct InfoSidePanel: View {
                 .tracking(1)
                 .foregroundStyle(tint ?? AppColors.fgDim(nightMode))
         }
+    }
+
+    /// 0.8.3: camera scope badge rendered next to the "CLASSIFIER"
+    /// header. Makes it unambiguous which of the two per-camera
+    /// models' stats the panel is currently showing — colour uses a
+    /// warm orange (matches the OSC Bayer-pattern mental model),
+    /// mono uses a desaturated slate grey.
+    private func cameraScopePill(_ camera: CameraType) -> some View {
+        let (label, tint): (String, Color) = {
+            switch camera {
+            case .color:      return ("COLOUR", Color(red: 0.95, green: 0.55, blue: 0.18))
+            case .monochrome: return ("MONO",   Color(red: 0.55, green: 0.60, blue: 0.68))
+            }
+        }()
+        return Text(label)
+            .font(.system(size: 9, weight: .heavy, design: .rounded))
+            .tracking(0.8)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(tint)
+            .clipShape(Capsule())
     }
 
     private func detailRow(_ key: String, _ value: String) -> some View {

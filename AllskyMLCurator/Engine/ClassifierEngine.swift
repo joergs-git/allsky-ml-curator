@@ -124,6 +124,14 @@ final class ClassifierEngine: ObservableObject {
     /// training failed — powers the toolbar status line.
     @Published private(set) var lastCoverage: TrainingCoverage?
 
+    /// 0.8.3: per-camera training summaries + coverage. `summary` /
+    /// `lastCoverage` above stay as headline fields (preferring
+    /// colour) so existing readers keep working; new UI that wants to
+    /// show the stats of whichever camera the user is currently
+    /// looking at reads from these dicts instead.
+    @Published private(set) var cameraSummaries: [CameraType: TrainingSummary] = [:]
+    @Published private(set) var cameraCoverages: [CameraType: TrainingCoverage] = [:]
+
     struct TrainingCoverage: Equatable, Sendable {
         var totalRated: Int
         var withEmbedding: Int
@@ -650,6 +658,9 @@ final class ClassifierEngine: ObservableObject {
                 classCounts: classCounts
             )
             models[cameraType] = model
+            if let cov = model.lastCoverage {
+                cameraCoverages[cameraType] = cov
+            }
 
             if embeddedCount == 0 || distinctClasses < 2 {
                 // Not enough data for this camera — skip silently so
@@ -720,6 +731,9 @@ final class ClassifierEngine: ObservableObject {
                 durationSeconds: duration
             )
             models[cameraType] = model
+            if let sum = model.summary {
+                cameraSummaries[cameraType] = sum
+            }
             weightsVersion &+= 1
 
             await persistTrainedModel(
@@ -797,6 +811,12 @@ final class ClassifierEngine: ObservableObject {
                 durationSeconds: restoredDuration
             )
             models[cameraType] = model
+            if let sum = model.summary {
+                cameraSummaries[cameraType] = sum
+            }
+            if let cov = model.lastCoverage {
+                cameraCoverages[cameraType] = cov
+            }
             restoredAny = true
         }
         weightsVersion &+= 1
@@ -849,6 +869,8 @@ final class ClassifierEngine: ObservableObject {
         models = [:]
         summary = nil
         lastCoverage = nil
+        cameraSummaries = [:]
+        cameraCoverages = [:]
         predictions = [:]
         weightsVersion &+= 1
     }

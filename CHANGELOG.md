@@ -4,6 +4,37 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.8.3] — 2026-04-23
+
+**Per-camera classifier surfacing in the info side panel.** 0.8.2
+trained one MLP per camera but the sidebar was hard-wired to
+`.color`'s summary, so a curator inspecting a mono frame saw colour
+CV / colour class counts / colour duration regardless. 0.8.3 routes
+the panel to whichever camera the user is currently looking at.
+
+### Added
+- **`ClassifierEngine.cameraSummaries` + `.cameraCoverages`** —
+  `@Published` dicts keyed by `CameraType`. Populated on every
+  `trainOne(cameraType:)` completion and on `restoreLatestModel()`
+  per scope. Headline `summary` / `lastCoverage` stay around for
+  backward compatibility with the toolbar chip.
+- **`InfoSidePanel.activeCamera`** — computed property that picks
+  the camera scope the panel surfaces: single selection →
+  selected frame's camera; homogeneous matrix view → that camera;
+  mixed → `.color`.
+- **Camera scope pill** next to the "CLASSIFIER" section header
+  (`COLOUR` in warm orange, `MONO` in slate grey). Makes the scope
+  unambiguous so 86 % on a colour frame vs 83 % on a mono frame
+  are clearly two separate numbers, not one drifting.
+- **Classifier summary + coverage + class counts + confusion matrix
+  + per-class P/R/F1** all now come from the active-camera slot.
+  Select a mono tile → mono's CV, mono's confusion matrix, mono's
+  support counts. Select a colour tile → colour's.
+
+### Fixed
+- **"ready to train" subtitle** said `N/5 classes` since 0.8.0
+  collapsed the scheme to three. Now reads `N/3 classes`.
+
 ## [0.8.2] — 2026-04-22
 
 **Two classifiers instead of one** — separate MLP per camera type
