@@ -50,6 +50,15 @@ final class EmbeddingWarmer: ObservableObject {
     // MARK: - Private
 
     private var currentTask: Task<Void, Never>?
+    /// 0.8.6: separate handle on the detached Vision-work task.
+    /// `Task.detached` in `performRun` spawns a fully independent
+    /// task — cancelling `currentTask` alone doesn't propagate into
+    /// it, which is why clicking the Embeddings chip's stop icon
+    /// looked like a no-op (the outer task got cancelled, the inner
+    /// detached loop kept churning through Vision requests until it
+    /// finished on its own). Holding this reference lets `cancel()`
+    /// hit both.
+    private var currentDetachedTask: Task<Void, Never>?
 
     // MARK: - Public API
 
@@ -75,9 +84,14 @@ final class EmbeddingWarmer: ObservableObject {
         }
     }
 
-    /// Cancel the in-flight pass. Safe to call when idle.
+    /// Cancel the in-flight pass. Safe to call when idle. Cancels
+    /// both the outer orchestration task AND the detached Vision
+    /// worker — the per-frame `Task.isCancelled` check in `warmPhase`
+    /// then breaks the loop on the next iteration (typically within
+    /// a second or two once the in-flight Vision request settles).
     func cancel() {
         currentTask?.cancel()
+        currentDetachedTask?.cancel()
     }
 
     // MARK: - Worker
@@ -87,24 +101,34 @@ final class EmbeddingWarmer: ObservableObject {
         let unrated = await ImageLibrary.shared.fetchUnratedImages()
 
         // Heavy work (Vision + SMB reads) must stay off MainActor.
-        await Task.detached(priority: .utility) { [weak self] in
+        // Keep the handle on this detached task in
+        // `currentDetachedTask` so `cancel()` can reach it — without
+        // this, the outer orchestration task is cancellable but the
+        // loop inside `warmPhase` never observes cancellation and
+        // runs to completion.
+        let detached = Task.detached(priority: .utility) { [weak self] in
             guard let self else { return }
             await self.warmPhase(
                 images: rated,
                 phaseMarker: .rated,
                 refreshPredictionsEvery: nil
             )
+            if Task.isCancelled { return }
             await self.warmPhase(
                 images: unrated,
                 phaseMarker: .unrated,
                 refreshPredictionsEvery: 100
             )
+            if Task.isCancelled { return }
 
             // Final prediction refresh even if the last batch didn't
             // hit the 100-frame tick — otherwise the freshly-embedded
             // tail stays brain-less until the next ⌘T.
             await ClassifierEngine.shared.refreshPredictions()
-        }.value
+        }
+        currentDetachedTask = detached
+        await detached.value
+        currentDetachedTask = nil
 
         let summary = "\(newlyEmbedded) new embedding(s) written."
         await MainActor.run { self.lastSummary = summary }
