@@ -336,6 +336,36 @@ final class EmbeddingPipeline: @unchecked Sendable {
         ))?.count ?? 0
     }
 
+    /// 0.8.10: count of sidecars that match a specific list of image
+    /// paths (i.e. the current filtered matrix view). The naive
+    /// `sidecarCount()` counts EVERY sidecar on disk, including
+    /// orphans from previously-ingested frames that are no longer in
+    /// the active DB — on a multi-purge / multi-ingest library that
+    /// number can exceed `items.count` and made the toolbar chip
+    /// look like `51592 / 45056` (numerator > denominator, nonsense).
+    ///
+    /// Implementation: list the cache dir once (~1 ms for 50 k
+    /// entries), build a `Set<String>` of the filenames, then hash
+    /// each requested path and look it up. O(N) stats replaced by
+    /// O(N) set lookups + one directory read.
+    static func sidecarCount(matching paths: [String]) -> Int {
+        guard
+            let files = try? FileManager.default.contentsOfDirectory(
+                at: cacheDirectory,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )
+        else { return 0 }
+        let existing = Set(files.map(\.lastPathComponent))
+        var matched = 0
+        for path in paths {
+            let digest = SHA256.hash(data: Data(path.utf8))
+            let key = digest.map { String(format: "%02x", $0) }.joined()
+            if existing.contains(key + ".fp") { matched += 1 }
+        }
+        return matched
+    }
+
     // MARK: - Concurrency helpers
 
     private let inflight = Mutex<[String: Task<Embedding?, Never>]>(initial: [:])

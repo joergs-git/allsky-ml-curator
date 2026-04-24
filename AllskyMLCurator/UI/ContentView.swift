@@ -117,8 +117,19 @@ struct ContentView: View {
             // Poll the embedding sidecar count + classifier coverage
             // every 2 s so the toolbar chips advance live as the
             // background generator writes files and ratings flow in.
+            //
+            // 0.8.10: match sidecars to the current filtered item
+            // list rather than reporting raw directory size. Orphan
+            // sidecars from previous ingests / purges are real but
+            // out of scope for this chip — their presence made the
+            // numerator exceed the denominator, which read like a
+            // bug. The hash + set-intersection runs on a utility
+            // task so a 45 k item list doesn't block MainActor.
             while !Task.isCancelled {
-                embeddedCount = EmbeddingPipeline.sidecarCount()
+                let paths = items.map(\.image.filePath)
+                embeddedCount = await Task.detached(priority: .utility) {
+                    EmbeddingPipeline.sidecarCount(matching: paths)
+                }.value
                 await classifier.refreshCoverage()
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
