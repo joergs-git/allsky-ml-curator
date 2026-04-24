@@ -48,12 +48,29 @@ struct AllskyMLCuratorApp: App {
                 }
             }
             // Edit → Delete Selected. Registered at the Commands
-            // level so macOS's standard responder chain routes
-            // ⌘⌫ to it — the .background + .keyboardShortcut(.delete,
-            // modifiers: .command) trick on an opacity-0 Button did
-            // not reliably pick the combo up.
+            // level so macOS's standard responder chain routes the
+            // shortcut to it even when keyboard focus is on an
+            // element outside the matrix (toolbar picker, gauge chip).
+            //
+            // 0.8.6: primary shortcut is bare ⌫ (Finder / Mail
+            // convention for "move the selected row to trash"). The
+            // `.onKeyPress` in MatrixView / ListView catches it too
+            // when the matrix has focus, but routing through the
+            // menu command ensures the shortcut lands even if focus
+            // drifted elsewhere. Text fields in Preferences / ingest
+            // sheets keep their native ⌫-to-delete-char behaviour —
+            // the responder chain gives them priority before menu
+            // shortcuts see the event. A second hidden "Edit →
+            // Delete Selected (⌘⌫)" command preserves ⌘⌫ for people
+            // with macOS muscle memory.
             CommandGroup(after: .pasteboard) {
                 Button("Delete Selected Images") {
+                    NotificationCenter.default.post(
+                        name: .deleteSelectedImagesRequested, object: nil
+                    )
+                }
+                .keyboardShortcut(.delete, modifiers: [])
+                Button("Delete Selected Images (⌘⌫ alt)") {
                     NotificationCenter.default.post(
                         name: .deleteSelectedImagesRequested, object: nil
                     )
