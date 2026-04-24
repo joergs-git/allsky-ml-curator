@@ -97,8 +97,27 @@ final class EmbeddingWarmer: ObservableObject {
     // MARK: - Worker
 
     private func performRun() async {
-        let rated = await ImageLibrary.shared.fetchRatedImages()
-        let unrated = await ImageLibrary.shared.fetchUnratedImages()
+        // 0.8.8: honour the Night-only / Day-only app setting so the
+        // warmer doesn't waste Vision + SMB time on frames that will
+        // never enter the matrix or training. On Rheine's library
+        // this is ~61 % saving — most captures are daytime; only
+        // sun_alt ≤ -13° frames are actually rated / trained.
+        let settings = AppSettings.shared
+        let maxSunAlt: Double? = settings.nightOnlyMode
+            ? settings.nightOnlySunAltMaxDeg
+            : nil
+        let minSunAlt: Double? = settings.dayOnlyMode
+            ? settings.dayOnlySunAltMinDeg
+            : nil
+
+        let rated = await ImageLibrary.shared.fetchRatedImages(
+            maxSunAltDeg: maxSunAlt,
+            minSunAltDeg: minSunAlt
+        )
+        let unrated = await ImageLibrary.shared.fetchUnratedImages(
+            maxSunAltDeg: maxSunAlt,
+            minSunAltDeg: minSunAlt
+        )
 
         // Heavy work (Vision + SMB reads) must stay off MainActor.
         // Keep the handle on this detached task in

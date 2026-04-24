@@ -4,6 +4,25 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.8.8] — 2026-04-24
+
+**Embedding warmer honours Night-only / Day-only.** Previously the
+warmer pulled every unrated frame regardless of sun altitude and
+ran Vision extraction on all of them — on Rheine's library that's
+~71 000 daytime colour frames that never enter the matrix (because
+night-only is on) or training (same). ~61 % of the work was pure
+waste. Now it reads `AppSettings.nightOnlyMode` / `dayOnlyMode` and
+filters at the SQL level, just like the matrix reload does.
+
+### Changed
+- **`ImageLibrary.fetchRatedImages` + `fetchUnratedImages`** gain
+  optional `maxSunAltDeg` / `minSunAltDeg` parameters (default nil
+  = no filter, preserves existing callers).
+- **`EmbeddingWarmer.performRun`** reads the two filter values from
+  `AppSettings` and passes them through. Toggling Night-only off
+  and re-running the warmer picks up the previously-skipped
+  daytime frames.
+
 ## [0.8.7] — 2026-04-24
 
 **Multi-folder ingest.** The NAS layout is one `YYYY-MM-DD/`

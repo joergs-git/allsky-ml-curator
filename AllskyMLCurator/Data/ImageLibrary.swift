@@ -116,7 +116,16 @@ final class ImageLibrary: ObservableObject {
     /// Used by the app-start embedding warmer so the classifier's
     /// training set grows even if the user rated frames without
     /// scrolling through every tile.
-    func fetchRatedImages() async -> [ImageRecord] {
+    ///
+    /// 0.8.8: optional `maxSunAltDeg` / `minSunAltDeg` filters so
+    /// the warmer can honour the Night-only / Day-only app setting
+    /// and skip frames that will never enter training. Defaults to
+    /// nil (no filter) — callers that don't care about sun altitude
+    /// keep the original behaviour.
+    func fetchRatedImages(
+        maxSunAltDeg: Double? = nil,
+        minSunAltDeg: Double? = nil
+    ) async -> [ImageRecord] {
         let reader = Database.shared.reader
         return (try? await reader.read { db in
             let ratedIds = try LabelRecord
@@ -126,8 +135,15 @@ final class ImageLibrary: ObservableObject {
                 .select(Column("imageId"), as: Int64.self)
                 .fetchAll(db)
             guard !ratedIds.isEmpty else { return [] }
-            return try ImageRecord
+            var builder = ImageRecord
                 .filter(ratedIds.contains(Column("id")))
+            if let maxSunAltDeg {
+                builder = builder.filter(Column("sunAltDeg") <= maxSunAltDeg)
+            }
+            if let minSunAltDeg {
+                builder = builder.filter(Column("sunAltDeg") >= minSunAltDeg)
+            }
+            return try builder
                 .order(Column("captureUtc").asc)
                 .fetchAll(db)
         }) ?? []
@@ -139,7 +155,16 @@ final class ImageLibrary: ObservableObject {
     /// half of the embedding warmer — without embeddings for
     /// these frames the classifier has no prediction to show,
     /// so the matrix shows no brain badges.
-    func fetchUnratedImages() async -> [ImageRecord] {
+    ///
+    /// 0.8.8: same `maxSunAltDeg` / `minSunAltDeg` filter as
+    /// `fetchRatedImages` so the warmer can honour Night-only /
+    /// Day-only and skip ~61 % of the work on a night-focused
+    /// library (Rheine captures more daytime than nighttime frames
+    /// per UTC day).
+    func fetchUnratedImages(
+        maxSunAltDeg: Double? = nil,
+        minSunAltDeg: Double? = nil
+    ) async -> [ImageRecord] {
         let reader = Database.shared.reader
         return (try? await reader.read { db in
             let ratedIds = try LabelRecord
@@ -149,8 +174,15 @@ final class ImageLibrary: ObservableObject {
                 .select(Column("imageId"), as: Int64.self)
                 .fetchAll(db)
             let ratedSet = Set(ratedIds)
-            let allImages = try ImageRecord
+            var builder = ImageRecord
                 .filter(ImageRecord.Columns.isExcluded == false)
+            if let maxSunAltDeg {
+                builder = builder.filter(Column("sunAltDeg") <= maxSunAltDeg)
+            }
+            if let minSunAltDeg {
+                builder = builder.filter(Column("sunAltDeg") >= minSunAltDeg)
+            }
+            let allImages = try builder
                 .order(Column("captureUtc").asc)
                 .fetchAll(db)
             return allImages.filter { image in
