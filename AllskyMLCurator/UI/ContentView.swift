@@ -701,6 +701,7 @@ struct ContentView: View {
                 columns: columns,
                 nightMode: nightMode,
                 predictions: classifier.predictions,
+                isTrashView: ratingFilter.isExcludedView,
                 onSelectionChange: { selectedIds = $0 },
                 onMutation: { await reload() },
                 onInspect: { idx in inspectedIndex = idx }
@@ -710,6 +711,7 @@ struct ContentView: View {
                 items: items,
                 nightMode: nightMode,
                 predictions: classifier.predictions,
+                isTrashView: ratingFilter.isExcludedView,
                 onSelectionChange: { selectedIds = $0 },
                 onMutation: { await reload() },
                 onInspect: { idx in inspectedIndex = idx }

@@ -20,6 +20,9 @@ struct ListView: View {
     let items: [ImageLibrary.ImageListItem]
     let nightMode: Bool
     let predictions: [Int64: ClassifierEngine.Prediction]
+    /// 0.8.6: trash-bin view — Backspace + context menu restore
+    /// instead of exclude. Matches MatrixView.isTrashView.
+    let isTrashView: Bool
     let onSelectionChange: (Set<Int64>) -> Void
     let onMutation: () async -> Void
     let onInspect: (Int) -> Void
@@ -91,15 +94,24 @@ struct ListView: View {
                 handleKey(press, proxy: proxy)
             }
             .alert(
-                "Remove \(pendingDeleteIds.count) image\(pendingDeleteIds.count == 1 ? "" : "s") from the library?",
+                isTrashView
+                    ? "Restore \(pendingDeleteIds.count) image\(pendingDeleteIds.count == 1 ? "" : "s") back into the library?"
+                    : "Exclude \(pendingDeleteIds.count) image\(pendingDeleteIds.count == 1 ? "" : "s") from the library?",
                 isPresented: $showDeleteConfirm
             ) {
-                Button("Remove", role: .destructive) {
+                Button(
+                    isTrashView ? "Restore" : "Exclude",
+                    role: isTrashView ? .none : .destructive
+                ) {
                     confirmDelete(pendingDeleteIds)
                 }
                 Button("Cancel", role: .cancel) { }
             } message: {
-                Text("The image index row, every label, every prediction, and the cached thumbnail + embedding sidecar will be deleted locally. Supabase rows stay — re-ingest would push them back. This cannot be undone locally without re-ingest.")
+                if isTrashView {
+                    Text("Flips `isExcluded=0` so the frame reappears in the matrix and re-enters training at next ⌘T. Embedding sidecar was purged on exclude; the warmer will regenerate it.")
+                } else {
+                    Text("Flips `isExcluded=1` so re-ingest won't bring them back. Thumbnails + embedding sidecars are purged to reclaim disk. View / restore later via rating filter = ‘Only excluded’.")
+                }
             }
             .onReceive(NotificationCenter.default.publisher(
                 for: .deleteSelectedImagesRequested
@@ -123,8 +135,12 @@ struct ListView: View {
             ? selectedIds
             : [item.id]
         let count = effectiveIds.count
-        Button("Delete \(count) highlighted image\(count == 1 ? "" : "s")",
-               systemImage: "trash") {
+        let verb = isTrashView ? "Restore" : "Exclude"
+        let icon = isTrashView ? "arrow.uturn.backward" : "trash"
+        Button(
+            "\(verb) \(count) highlighted image\(count == 1 ? "" : "s")",
+            systemImage: icon
+        ) {
             if !selectedIds.contains(item.id) {
                 selectedIds = [item.id]
                 cursorId = item.id
@@ -502,7 +518,11 @@ struct ListView: View {
 
     private func confirmDelete(_ ids: [Int64]) {
         Task {
-            _ = await ImageLibrary.shared.deleteImages(ids)
+            if isTrashView {
+                _ = await ImageLibrary.shared.restoreImages(ids)
+            } else {
+                _ = await ImageLibrary.shared.deleteImages(ids)
+            }
             await onMutation()
         }
     }

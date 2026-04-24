@@ -51,6 +51,11 @@ struct MatrixView: View {
     let columns: Int
     let nightMode: Bool
     let predictions: [Int64: ClassifierEngine.Prediction]
+    /// 0.8.6: when true the matrix is showing soft-excluded frames
+    /// (rating filter = Only excluded). Backspace + the context menu
+    /// invert: instead of excluding, they restore. Confirm alert copy
+    /// flips to match.
+    let isTrashView: Bool
     let onSelectionChange: (Set<Int64>) -> Void
     let onMutation: () async -> Void
     let onInspect: (Int) -> Void
@@ -161,15 +166,24 @@ struct MatrixView: View {
                 handleKey(press, proxy: proxy)
             }
             .alert(
-                "Remove \(pendingDeleteIds.count) image\(pendingDeleteIds.count == 1 ? "" : "s") from the library?",
+                isTrashView
+                    ? "Restore \(pendingDeleteIds.count) image\(pendingDeleteIds.count == 1 ? "" : "s") back into the library?"
+                    : "Exclude \(pendingDeleteIds.count) image\(pendingDeleteIds.count == 1 ? "" : "s") from the library?",
                 isPresented: $showDeleteConfirm
             ) {
-                Button("Remove", role: .destructive) {
+                Button(
+                    isTrashView ? "Restore" : "Exclude",
+                    role: isTrashView ? .none : .destructive
+                ) {
                     confirmDelete(pendingDeleteIds)
                 }
                 Button("Cancel", role: .cancel) { }
             } message: {
-                Text("The image index row, every label, every prediction, and the cached thumbnail + embedding sidecar will be deleted locally. Supabase rows stay — re-ingest would push them back. This cannot be undone locally without re-ingest.")
+                if isTrashView {
+                    Text("The DB row flips `isExcluded=0`, the frame reappears in the matrix, and training includes it again on the next ⌘T. The Vision FeaturePrint sidecar was purged on exclude, so the warmer will regenerate it in the background.")
+                } else {
+                    Text("The DB row stays (flag `isExcluded=1`), so re-ingest won't bring these frames back — they simply vanish from the matrix and training. Thumbnails + embedding sidecars are purged to reclaim disk. You can surface them later via rating filter = ‘Only excluded’ and restore individual frames there.")
+                }
             }
             // ⌘⌫ comes through the Edit → Delete Selected menu
             // command registered at App.commands level; it posts
@@ -204,8 +218,12 @@ struct MatrixView: View {
             ? selectedIds
             : [item.id]
         let count = effectiveIds.count
-        Button("Delete \(count) highlighted image\(count == 1 ? "" : "s")",
-               systemImage: "trash") {
+        let verb = isTrashView ? "Restore" : "Exclude"
+        let icon = isTrashView ? "arrow.uturn.backward" : "trash"
+        Button(
+            "\(verb) \(count) highlighted image\(count == 1 ? "" : "s")",
+            systemImage: icon
+        ) {
             if !selectedIds.contains(item.id) {
                 selectedIds = [item.id]
                 cursorId = item.id
@@ -217,11 +235,18 @@ struct MatrixView: View {
         }
     }
 
-    // MARK: - Deletion
+    // MARK: - Exclude / restore
 
+    /// Branches on `isTrashView`: in the trash-bin filter we restore,
+    /// otherwise we soft-exclude. The alert label already reflects
+    /// the verb; this is the actual DB call.
     private func confirmDelete(_ ids: [Int64]) {
         Task {
-            _ = await ImageLibrary.shared.deleteImages(ids)
+            if isTrashView {
+                _ = await ImageLibrary.shared.restoreImages(ids)
+            } else {
+                _ = await ImageLibrary.shared.deleteImages(ids)
+            }
             await onMutation()
         }
     }

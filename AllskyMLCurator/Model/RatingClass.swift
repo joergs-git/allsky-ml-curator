@@ -81,12 +81,17 @@ enum RatingFilter: Hashable, Identifiable, Sendable {
     case any
     case unrated
     case exactly(RatingClass)
+    /// 0.8.6: show soft-excluded frames (Backspace no longer
+    /// hard-deletes; it flips `images.is_excluded = 1`). This filter
+    /// is how the curator resurfaces them to audit or restore.
+    case excluded
 
     var id: String {
         switch self {
         case .any:                   return "any"
         case .unrated:               return "unrated"
         case .exactly(let c):        return "cls\(c.rawValue)"
+        case .excluded:              return "excluded"
         }
     }
 
@@ -96,6 +101,7 @@ enum RatingFilter: Hashable, Identifiable, Sendable {
         case .unrated:          return "Only unrated"
         case .exactly(let c):
             return "Only \(c.rawValue) — \(c.shortName)"
+        case .excluded:         return "Only excluded (trash)"
         }
     }
 
@@ -106,7 +112,8 @@ enum RatingFilter: Hashable, Identifiable, Sendable {
             .unrated,
             .exactly(.unsuitable),
             .exactly(.partial),
-            .exactly(.suitable)
+            .exactly(.suitable),
+            .excluded
         ]
     }
 
@@ -116,7 +123,16 @@ enum RatingFilter: Hashable, Identifiable, Sendable {
         case .any:              return true
         case .unrated:          return cls == .unrated
         case .exactly(let c):   return cls == c
+        case .excluded:         return true
         }
+    }
+
+    /// True when this filter is showing the soft-excluded pile —
+    /// the matrix needs to flip `includeExcluded` on the DB read AND
+    /// restrict to `is_excluded == true`.
+    var isExcludedView: Bool {
+        if case .excluded = self { return true }
+        return false
     }
 }
 

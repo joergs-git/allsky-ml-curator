@@ -49,7 +49,14 @@ final class ImageLibrary: ObservableObject {
             return try await reader.read { db in
                 var builder: QueryInterfaceRequest<ImageRecord> = ImageRecord.all()
 
-                if !includeExcluded {
+                // 0.8.6: the `.excluded` rating filter is a view of
+                // soft-excluded frames (the trash bin). It overrides
+                // the default `includeExcluded=false` gate and further
+                // restricts to `isExcluded == true` — so the curator
+                // sees exactly the exclude pile, no mixing.
+                if ratingFilter.isExcludedView {
+                    builder = builder.filter(ImageRecord.Columns.isExcluded == true)
+                } else if !includeExcluded {
                     builder = builder.filter(ImageRecord.Columns.isExcluded == false)
                 }
                 if let cameraType {
@@ -157,29 +164,46 @@ final class ImageLibrary: ObservableObject {
 
     /// Delete the given image rows from the local index and purge
     /// their cached sidecars (thumbnail HEIC + Vision FeaturePrint).
-    /// The `images` table has `onDelete: .cascade` on `labels` +
-    /// `predictions`, so every derived row follows automatically.
+    /// 0.8.6: soft-exclude instead of hard-delete. Previously this
+    /// ran `DELETE FROM images` which dropped the row entirely — the
+    /// weather-filtered ingest (`WeatherIngestSheet` / `IngestService`)
+    /// deduplicates by `filePath` only, so on the next re-ingest the
+    /// "deleted" files walked straight back in because the DB no
+    /// longer knew about their paths. User-visible effect: the Delete
+    /// action felt useless.
     ///
-    /// Supabase rows on `ml_training_samples` are **not** touched —
-    /// they're upserted by `image_path`, so the canonical rating
-    /// history on the server survives a local purge. Re-ingesting
-    /// the same file and re-rating would push an UPDATE, not a
-    /// duplicate INSERT.
+    /// New behaviour: flip `is_excluded = 1`, keep the row (and its
+    /// labels + predictions for audit). The matrix already filters
+    /// out excluded rows (`fetchImages` default `includeExcluded =
+    /// false`) and the trainer already skips them, so the tiles
+    /// disappear from view exactly like before. Crucially the
+    /// filePath stays in the DB, so re-ingest dedup recognises the
+    /// file and won't re-insert a duplicate row.
     ///
-    /// Returns the actual delete count so callers can report "10 of
-    /// 12 removed" when some rows had already been deleted by another
-    /// writer.
+    /// Thumbnails + Vision FeaturePrint sidecars are still purged —
+    /// they're disposable and reclaim real disk space. If the user
+    /// ever un-excludes a row (not yet wired), the warmer regenerates
+    /// them.
+    ///
+    /// Supabase `ml_training_samples` is untouched (same as before) —
+    /// image rows never sync upstream anyway.
+    ///
+    /// Returns the number of rows flipped.
     @discardableResult
     func deleteImages(_ imageIds: [Int64]) async -> Int {
         guard !imageIds.isEmpty else { return 0 }
 
-        // Read the paths + camera sources BEFORE delete so we can
-        // purge the right HEIC + .fp sidecars afterwards.
+        // Read the paths + camera sources BEFORE we touch the rows so
+        // we can purge the right HEIC + .fp sidecars afterwards.
+        // Filter to rows that are currently `isExcluded == false` —
+        // already-excluded rows don't need a second flip or a second
+        // round of cache-purging.
         let reader = Database.shared.reader
         let doomed: [(path: String, camera: CameraType)] = (
             try? await reader.read { db in
                 try ImageRecord
                     .filter(imageIds.contains(Column("id")))
+                    .filter(ImageRecord.Columns.isExcluded == false)
                     .fetchAll(db)
                     .compactMap { image in
                         (image.filePath, image.cameraSource.cameraType)
@@ -187,29 +211,58 @@ final class ImageLibrary: ObservableObject {
             }
         ) ?? []
 
-        // Single-transaction delete; FK cascade takes labels +
-        // predictions with it.
-        var deletedCount = 0
+        var excludedCount = 0
         do {
             try await Database.shared.writer.write { db in
-                deletedCount = try ImageRecord
+                excludedCount = try ImageRecord
                     .filter(imageIds.contains(Column("id")))
-                    .deleteAll(db)
+                    .filter(ImageRecord.Columns.isExcluded == false)
+                    .updateAll(
+                        db,
+                        ImageRecord.Columns.isExcluded.set(to: true)
+                    )
             }
         } catch {
-            NSLog("ImageLibrary.deleteImages failed: \(error)")
+            NSLog("ImageLibrary.deleteImages soft-exclude failed: \(error)")
             return 0
         }
 
-        // Purge local cache files — harmless if the files don't
-        // exist; no SMB access needed.
+        // Reclaim disk: thumbnails + embedding sidecars are cheap to
+        // regenerate, so purging on exclude is a clear win.
         for entry in doomed {
             ThumbnailCache.shared.purgeCache(
                 for: entry.path, cameraType: entry.camera
             )
             EmbeddingPipeline.shared.purgeCache(for: entry.path)
         }
-        return deletedCount
+        return excludedCount
+    }
+
+    /// 0.8.6: inverse of the soft-exclude. Flips `is_excluded` back
+    /// to 0 so the frame re-enters the matrix + training set on the
+    /// next reload. Thumbnails + embedding sidecars were purged on
+    /// exclude (to reclaim disk); the warmer regenerates them on the
+    /// next coverage pass. No Supabase call — image rows never
+    /// travel upstream.
+    ///
+    /// Returns the number of rows actually un-excluded.
+    @discardableResult
+    func restoreImages(_ imageIds: [Int64]) async -> Int {
+        guard !imageIds.isEmpty else { return 0 }
+        do {
+            return try await Database.shared.writer.write { db in
+                try ImageRecord
+                    .filter(imageIds.contains(Column("id")))
+                    .filter(ImageRecord.Columns.isExcluded == true)
+                    .updateAll(
+                        db,
+                        ImageRecord.Columns.isExcluded.set(to: false)
+                    )
+            }
+        } catch {
+            NSLog("ImageLibrary.restoreImages failed: \(error)")
+            return 0
+        }
     }
 
     // MARK: - Rating writes

@@ -4,6 +4,36 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.8.6] — 2026-04-24
+
+**Delete becomes soft-exclude; re-ingest no longer resurrects it.**
+Previously `Delete` / `⌘⌫` / right-click `Delete` ran `DELETE FROM
+images`, and the weather-filtered ingest deduped only on `filePath`.
+Result: the "deleted" files walked straight back in on the next
+ingest pass because the DB no longer knew their path. The delete
+action felt useless; actual junk couldn't be kept out.
+
+### Changed
+- **`ImageLibrary.deleteImages()`** is now an `UPDATE images SET
+  isExcluded = 1 WHERE id IN (...)` — soft-exclude, not hard delete.
+  The row survives, labels + predictions stay for audit, but
+  thumbnails + Vision FeaturePrint sidecars are still purged
+  (disposable, cheap to regenerate). Re-ingest dedup naturally
+  blocks re-insertion because the filePath is still in the DB.
+- **Confirm alert copy** now says "Exclude N frames" and explains
+  that re-ingest will NOT bring them back, plus how to restore.
+- **Context menu** button flips verb/icon based on current filter.
+
+### Added
+- **`RatingFilter.excluded`** — "Only excluded (trash)" option in
+  the rating filter picker. Shows the soft-exclude pile so the
+  curator can audit or recover mistakes.
+- **`ImageLibrary.restoreImages()`** — inverse of the exclude.
+  Flips `isExcluded = 0`; sidecar / thumbnail warmer regenerates
+  caches on the next pass. UI exposure: in the trash-bin view,
+  Backspace + right-click context menu run Restore instead of
+  Exclude, with alert copy to match.
+
 ## [0.8.5] — 2026-04-23
 
 **"How to start" floating reference in the toolbar.** The idiomatic
