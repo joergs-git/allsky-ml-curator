@@ -157,38 +157,56 @@ final class EmbeddingWarmer: ObservableObject {
     /// that doesn't already have a `.fp` sidecar on disk. Updates the
     /// observable counters on MainActor after every frame so the
     /// Preferences progress view advances live.
+    ///
+    /// 0.8.8b: pre-filter the list so the loop only iterates frames
+    /// that actually need work. The old path walked every image in
+    /// the phase and did a MainActor `done += 1` hop per frame even
+    /// for already-cached ones — on a mostly-warm 45 k-frame library
+    /// that's ~45 s of pointless roundtrips on every pause+resume.
+    /// `sidecarExists` is a local `stat` + SHA-256 on the path, fast
+    /// enough to batch up-front on the detached task with zero
+    /// MainActor contention. The total the UI shows (`done/total`)
+    /// now reflects *remaining work*, which is more useful anyway —
+    /// resume no longer kicks off at `0/45056` when there's really
+    /// only 1 800 to do.
     nonisolated private func warmPhase(
         images: [ImageRecord],
         phaseMarker: Phase,
         refreshPredictionsEvery: Int?
     ) async {
+        // Split up-front: frames that already have a sidecar never
+        // enter the loop. This runs on the current detached task —
+        // no MainActor involvement — so 45 k existence-checks finish
+        // in well under a second.
+        let pending = images.filter { image in
+            !EmbeddingPipeline.shared.sidecarExists(for: image.filePath)
+        }
+
         await MainActor.run {
             self.phase = phaseMarker
             self.done = 0
-            self.total = images.count
+            self.total = pending.count
         }
 
+        guard !pending.isEmpty else { return }
+
         var newThisPhase = 0
-        for image in images {
+        for image in pending {
             if Task.isCancelled { return }
 
-            let alreadyCached = EmbeddingPipeline.shared
-                .sidecarExists(for: image.filePath)
-            if !alreadyCached {
-                _ = await EmbeddingPipeline.shared.generate(
-                    for: image.filePath,
-                    cameraType: image.cameraSource.cameraType
-                )
-                newThisPhase += 1
-                if let every = refreshPredictionsEvery,
-                   newThisPhase.isMultiple(of: every) {
-                    await ClassifierEngine.shared.refreshPredictions()
-                }
+            _ = await EmbeddingPipeline.shared.generate(
+                for: image.filePath,
+                cameraType: image.cameraSource.cameraType
+            )
+            newThisPhase += 1
+            if let every = refreshPredictionsEvery,
+               newThisPhase.isMultiple(of: every) {
+                await ClassifierEngine.shared.refreshPredictions()
             }
 
             await MainActor.run {
                 self.done += 1
-                if !alreadyCached { self.newlyEmbedded += 1 }
+                self.newlyEmbedded += 1
             }
         }
     }
