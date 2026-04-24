@@ -182,10 +182,19 @@ final class EmbeddingWarmer: ObservableObject {
             !EmbeddingPipeline.shared.sidecarExists(for: image.filePath)
         }
 
+        // 0.8.9: `done` starts at the already-embedded count, not
+        // 0. Pause + resume therefore shows the chip continuing at
+        // `43 183 / 45 056` instead of jumping back to `0 / 1873`
+        // every time — the number matches what the outer chip
+        // polls via `EmbeddingPipeline.sidecarCount()`, so the two
+        // are finally telling the same story. Total = full phase
+        // count (same metric), not just the remaining slice.
+        let alreadyDone = images.count - pending.count
+
         await MainActor.run {
             self.phase = phaseMarker
-            self.done = 0
-            self.total = pending.count
+            self.done = alreadyDone
+            self.total = images.count
         }
 
         guard !pending.isEmpty else { return }
