@@ -4,6 +4,31 @@ All notable changes to Allsky-ML-Curator. Format follows
 [Keep a Changelog](https://keepachangelog.com/) loosely — one section
 per released `MARKETING_VERSION` in `project.yml`.
 
+## [0.8.7] — 2026-04-24
+
+**Multi-folder ingest.** The NAS layout is one `YYYY-MM-DD/`
+directory per night; rebuilding a library after a purge used to
+mean opening the ingest sheet once per night. Now ⌘O's picker
+accepts a multi-selection and the sheet holds a queue — a month
+of backfill = one click, one scan pass.
+
+### Added
+- **`IngestService.ingestFolders(_:cameraType:imageFormat:dryRun:)`**
+  — scans each folder in sequence under a single `isRunning`
+  window, a single `cancelToken` (Cancel halts the entire batch),
+  and shared counters so "inserted X of Y" reflects the whole
+  pass, not just the last folder. Status message ticks
+  `folder N of M — scanning …`.
+- **`IngestSheet` multi-select** — picker's
+  `allowsMultipleSelection = true`. A new queue list below the
+  Add button shows every folder with a remove (✕) and a Clear
+  shortcut. Primary action button label reflects count:
+  "Ingest 12 folders".
+- **`IngestService.processOneFolder(...)`** — private helper that
+  does the per-folder work (scan + enrich + write) without
+  resetting counters or flipping `isRunning`. `ingestFolder()`
+  becomes a thin wrapper around `ingestFolders([url])`.
+
 ## [0.8.6] — 2026-04-24
 
 **Delete becomes soft-exclude; re-ingest no longer resurrects it.**

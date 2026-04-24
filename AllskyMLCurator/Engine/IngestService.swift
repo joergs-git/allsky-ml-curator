@@ -61,92 +61,138 @@ final class IngestService: ObservableObject {
         imageFormat: ImageFormat,
         dryRun: Bool
     ) async {
-        guard !isRunning else { return }
+        await ingestFolders(
+            [folderURL],
+            cameraType: cameraType,
+            imageFormat: imageFormat,
+            dryRun: dryRun
+        )
+    }
+
+    /// 0.8.7: multi-folder ingest. Each night lives in its own
+    /// `YYYY-MM-DD/` directory on the NAS, so re-building a purged
+    /// library after an ingest mistake used to mean clicking through
+    /// ⌘O once per night. This variant runs a single pass across any
+    /// number of folders: one `isRunning` window, one `cancelToken`
+    /// (Cancel halts the entire batch), one shared set of counters
+    /// that accumulate so the "inserted 14 321" total reflects every
+    /// folder rather than just the last one. Status message ticks
+    /// `folder X of Y · scanning …` so it's obvious where we are.
+    func ingestFolders(
+        _ folderURLs: [URL],
+        cameraType: CameraType,
+        imageFormat: ImageFormat,
+        dryRun: Bool
+    ) async {
+        guard !isRunning, !folderURLs.isEmpty else { return }
         resetCounters()
         isRunning = true
         lastError = nil
         cancelToken = CancelToken()
         let token = cancelToken
 
-        // Sandbox: keep the folder accessible for the duration of the run.
+        let total = folderURLs.count
+        var failed = false
+
+        do {
+            for (index, folderURL) in folderURLs.enumerated() {
+                try token.checkCancelled()
+                statusMessage = total > 1
+                    ? "folder \(index + 1) of \(total) — scanning \(folderURL.lastPathComponent)…"
+                    : "scanning \(folderURL.lastPathComponent)…"
+                try await processOneFolder(
+                    folderURL,
+                    cameraType: cameraType,
+                    imageFormat: imageFormat,
+                    dryRun: dryRun,
+                    token: token
+                )
+            }
+            statusMessage = dryRun
+                ? "dry-run done — \(inserted) of \(totalFiles) eligible across \(total) folder(s)"
+                : "ingest done — \(inserted) of \(totalFiles) written across \(total) folder(s)"
+        } catch is CancellationError {
+            statusMessage = "cancelled"
+        } catch {
+            failed = true
+            lastError = (error as? LocalizedError)?.errorDescription
+                ?? String(describing: error)
+            statusMessage = "failed: \(lastError ?? "?")"
+        }
+        _ = failed // silence unused warning on fall-through paths
+        isRunning = false
+    }
+
+    /// Core per-folder worker. Assumes caller has already set
+    /// `isRunning`, created `cancelToken`, reset counters. Appends to
+    /// those counters rather than resetting them so a multi-folder
+    /// run shows cumulative totals.
+    private func processOneFolder(
+        _ folderURL: URL,
+        cameraType: CameraType,
+        imageFormat: ImageFormat,
+        dryRun: Bool,
+        token: CancelToken
+    ) async throws {
+        // Sandbox: keep the folder accessible for the duration of
+        // this pass. startAccessing... is balanced by the defer.
         let didStart = folderURL.startAccessingSecurityScopedResource()
         defer {
             if didStart { folderURL.stopAccessingSecurityScopedResource() }
         }
 
-        statusMessage = "scanning \(folderURL.lastPathComponent)…"
+        let files = scanFolder(folderURL, imageFormat: imageFormat)
+        totalFiles += files.count
 
-        do {
-            let files = scanFolder(folderURL, imageFormat: imageFormat)
-            totalFiles = files.count
-            statusMessage = "processing \(files.count) files…"
+        try await buildWeatherIndex(forFiles: files)
+        let dbWriter: DatabaseWriter? =
+            dryRun ? nil : Database.shared.writer
 
-            try await buildWeatherIndex(forFiles: files)
-            let dbWriter: DatabaseWriter? =
-                dryRun ? nil : Database.shared.writer
+        // Staged batch so we can commit the whole group in a single
+        // GRDB write transaction. Shared across folders is fine —
+        // each flush is independent.
+        var pendingBatch: [ImageRecord] = []
+        pendingBatch.reserveCapacity(Self.insertBatchSize)
 
-            // Staged batch so we can commit the whole group in a
-            // single GRDB write transaction. One transaction per file
-            // is fine at ~100 frames but at 20 000 frames the SQLite
-            // BEGIN/COMMIT overhead dominates, stretching an ingest
-            // run to several minutes of wall time. Batching to ~500
-            // cuts 20 k transactions down to ~40.
-            var pendingBatch: [ImageRecord] = []
-            pendingBatch.reserveCapacity(Self.insertBatchSize)
-
-            // Cancellation + error paths both need to flush any
-            // already-processed records to the DB so the user
-            // doesn't silently lose the first ~499 frames of a
-            // batch when they hit Cancel mid-run. The bookkeeping
-            // happens in the defer so every exit path is covered.
-            defer {
-                if let dbWriter, !pendingBatch.isEmpty {
-                    let doomed = pendingBatch
-                    Task { @MainActor in
-                        var batch = doomed
-                        await self.flushPendingBatch(&batch, into: dbWriter)
-                    }
-                }
-            }
-
-            for file in files {
-                try token.checkCancelled()
-                if let record = await processFile(
-                    file, cameraType: cameraType
-                ) {
-                    if dbWriter != nil {
-                        pendingBatch.append(record)
-                    } else {
-                        // Dry-run: count without DB writes so the
-                        // preview still reflects what a real run
-                        // would insert.
-                        inserted += 1
-                    }
-                }
-                processed += 1
-
-                if let dbWriter,
-                   pendingBatch.count >= Self.insertBatchSize {
-                    await flushPendingBatch(&pendingBatch, into: dbWriter)
-                }
-            }
-
+        // Cancellation + error paths both need to flush any
+        // already-processed records to the DB so the user doesn't
+        // silently lose the first ~499 frames of a batch when they
+        // hit Cancel mid-run.
+        defer {
             if let dbWriter, !pendingBatch.isEmpty {
-                await flushPendingBatch(&pendingBatch, into: dbWriter)
+                let doomed = pendingBatch
+                Task { @MainActor in
+                    var batch = doomed
+                    await self.flushPendingBatch(&batch, into: dbWriter)
+                }
             }
-
-            statusMessage = dryRun
-                ? "dry-run done — \(inserted) of \(files.count) eligible"
-                : "ingest done — \(inserted) of \(files.count) written"
-        } catch is CancellationError {
-            statusMessage = "cancelled"
-        } catch {
-            lastError = (error as? LocalizedError)?.errorDescription
-                ?? String(describing: error)
-            statusMessage = "failed: \(lastError ?? "?")"
         }
 
-        isRunning = false
+        for file in files {
+            try token.checkCancelled()
+            if let record = await processFile(
+                file, cameraType: cameraType
+            ) {
+                if dbWriter != nil {
+                    pendingBatch.append(record)
+                } else {
+                    // Dry-run: count without DB writes so the
+                    // preview still reflects what a real run
+                    // would insert.
+                    inserted += 1
+                }
+            }
+            processed += 1
+
+            if let dbWriter,
+               pendingBatch.count >= Self.insertBatchSize {
+                await flushPendingBatch(&pendingBatch, into: dbWriter)
+            }
+        }
+
+        if let dbWriter, !pendingBatch.isEmpty {
+            await flushPendingBatch(&pendingBatch, into: dbWriter)
+        }
     }
 
     /// Ingest an explicit list of file URLs rather than walking a

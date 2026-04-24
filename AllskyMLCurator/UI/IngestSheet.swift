@@ -13,7 +13,11 @@ struct IngestSheet: View {
     @Binding var isPresented: Bool
     @StateObject private var ingest = IngestService.shared
 
-    @State private var selectedFolder: URL?
+    /// 0.8.7: list rather than single folder so the curator can
+    /// queue multiple nights in one ingest pass (NAS layout is one
+    /// `YYYY-MM-DD/` directory per night, so a month's worth of
+    /// backfill used to mean opening this sheet 30 times).
+    @State private var selectedFolders: [URL] = []
     @State private var cameraType: CameraType = .color
     @State private var imageFormat: ImageFormat = .jpg
     @State private var dryRun: Bool = false
@@ -62,22 +66,59 @@ struct IngestSheet: View {
 
     private var controls: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Folder:")
+            HStack(alignment: .top) {
+                Text("Folders:")
                     .frame(width: 70, alignment: .trailing)
-                if let url = selectedFolder {
-                    Text(url.path)
-                        .font(.callout)
-                        .textSelection(.enabled)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                } else {
-                    Text("none — click Change…")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    if selectedFolders.isEmpty {
+                        Text("none — click Add…")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        // Summary line + scrollable list. Cmd-clicking
+                        // through the picker can queue a month's worth
+                        // of nightly folders; capping the list to a
+                        // scroll view keeps the sheet compact.
+                        Text("\(selectedFolders.count) folder\(selectedFolders.count == 1 ? "" : "s") queued")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        ScrollView(.vertical, showsIndicators: true) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                ForEach(selectedFolders, id: \.path) { url in
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "folder")
+                                            .foregroundStyle(.secondary)
+                                        Text(url.path)
+                                            .font(.caption.monospaced())
+                                            .textSelection(.enabled)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                        Spacer()
+                                        Button {
+                                            removeFolder(url)
+                                        } label: {
+                                            Image(systemName: "xmark.circle.fill")
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        .buttonStyle(.plain)
+                                        .help("Remove from the queue")
+                                    }
+                                }
+                            }
+                        }
+                        .frame(maxHeight: 110)
+                    }
                 }
                 Spacer()
-                Button("Change…") { openFolderPicker() }
+                VStack(spacing: 4) {
+                    Button("Add…") { openFolderPicker() }
+                    if !selectedFolders.isEmpty {
+                        Button("Clear") { selectedFolders = [] }
+                            .buttonStyle(.plain)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
 
             HStack {
@@ -120,11 +161,15 @@ struct IngestSheet: View {
             Toggle("Dry-run (scan + count only, no DB writes)", isOn: $dryRun)
 
             HStack {
-                Button(ingest.isRunning ? "Working…" : (dryRun ? "Dry-run" : "Ingest")) {
+                Button(ingest.isRunning
+                       ? "Working…"
+                       : (dryRun
+                          ? "Dry-run \(selectedFolders.count) folder\(selectedFolders.count == 1 ? "" : "s")"
+                          : "Ingest \(selectedFolders.count) folder\(selectedFolders.count == 1 ? "" : "s")")) {
                     startIngest()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(ingest.isRunning || selectedFolder == nil)
+                .disabled(ingest.isRunning || selectedFolders.isEmpty)
 
                 Button("Cancel") { ingest.cancel() }
                     .disabled(!ingest.isRunning)
@@ -180,24 +225,32 @@ struct IngestSheet: View {
 
     private func openFolderPicker() {
         let panel = NSOpenPanel()
-        panel.title = "Choose an allsky image folder"
-        panel.message = "Pick the root folder — the app scans it recursively for JPG and FITS files."
+        panel.title = "Choose allsky image folders"
+        panel.message = "Pick one or more night folders. Cmd-click or Shift-click in the picker to select multiple at once — the app scans each recursively for JPG and FITS files."
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
         panel.prompt = "Choose"
-        if let current = selectedFolder {
-            panel.directoryURL = current.deletingLastPathComponent()
-        } else if let last = AppSettings.shared.lastIngestedFolderPath {
+        if let last = AppSettings.shared.lastIngestedFolderPath {
             panel.directoryURL = URL(fileURLWithPath: last)
+                .deletingLastPathComponent()
         }
 
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        selectedFolder = url
-        AppSettings.shared.lastIngestedFolderPath = url.path
-        // Persist a security-scoped bookmark so future app launches
-        // retain read access to this folder and its SMB contents.
-        BookmarkStore.shared.save(url)
+        guard panel.runModal() == .OK else { return }
+        // Merge with the existing queue, dedup on path, preserve
+        // insertion order (newest additions at the end).
+        let existing = Set(selectedFolders.map(\.path))
+        for url in panel.urls where !existing.contains(url.path) {
+            selectedFolders.append(url)
+            BookmarkStore.shared.save(url)
+        }
+        if let first = panel.urls.first {
+            AppSettings.shared.lastIngestedFolderPath = first.path
+        }
+    }
+
+    private func removeFolder(_ url: URL) {
+        selectedFolders.removeAll { $0.path == url.path }
     }
 
     private func restoreLastSelection() {
@@ -209,16 +262,17 @@ struct IngestSheet: View {
            let saved = ImageFormat(rawValue: raw) {
             imageFormat = saved
         }
-        if selectedFolder == nil, let path = AppSettings.shared.lastIngestedFolderPath {
-            selectedFolder = URL(fileURLWithPath: path)
-        }
+        // Don't auto-fill the queue from the last single-folder
+        // setting — most users hitting ⌘O again want to start clean.
+        // The picker still opens at the previous parent directory.
     }
 
     private func startIngest() {
-        guard let folder = selectedFolder else { return }
+        guard !selectedFolders.isEmpty else { return }
+        let folders = selectedFolders
         Task {
-            await ingest.ingestFolder(
-                folder,
+            await ingest.ingestFolders(
+                folders,
                 cameraType: cameraType,
                 imageFormat: imageFormat,
                 dryRun: dryRun
